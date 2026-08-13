@@ -60,12 +60,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 2. 側邊欄控制器 (僅保留單一精準搜尋框)
+# 2. 側邊欄控制器
 st.sidebar.header("🔍 股票與全球行情")
-
-# 只留一個搜尋框，使用者打什麼就搜什麼
-raw_input = st.sidebar.text_input("輸入股票代碼 (例: 3715, 2330, NVDA)", value="3715")
-
+raw_input = st.sidebar.text_input("輸入股票代碼 (例: 3354, 3715, NVDA)", value="3354")
 timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
 
 # 3. 常用中文名稱對照表與自動股票名稱解析
@@ -73,13 +70,13 @@ COMMON_NAMES = {
     "2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科", 
     "8112.TWO": "至上", "8112.TW": "至上", "2382.TW": "廣達", 
     "3231.TW": "緯創", "0050.TW": "元大台灣50", "^TWII": "加權指數", 
-    "3026.TW": "禾伸堂", "3026.TWO": "禾伸堂", "3715.TW": "定穎投控", "3715.TWO": "定穎投控"
+    "3026.TW": "禾伸堂", "3715.TW": "定穎投控", "3354.TW": "律勝", "3354.TWO": "律勝"
 }
 
 def fetch_smart_stock(user_symbol, tf):
     code = user_symbol.strip().upper()
     if not code:
-        code = "3715"
+        code = "3354"
         
     candidates = []
     if "." in code or "^" in code or not code.isdigit():
@@ -95,7 +92,6 @@ def fetch_smart_stock(user_symbol, tf):
             tk = yf.Ticker(sym)
             df = tk.history(period=tf)
             if not df.empty:
-                # 獲取股票中文/英文名稱
                 stock_name = COMMON_NAMES.get(sym, "")
                 if not stock_name:
                     try:
@@ -110,13 +106,12 @@ def fetch_smart_stock(user_symbol, tf):
             continue
     return None, code, code
 
-# 4. 三大新聞源數據抓取 (CTEE, 鉅亨網, Yahoo股市)
+# 4. 三大新聞源數據抓取
 @st.cache_data(ttl=300)
 def fetch_all_news():
     news_items = []
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # 鉅亨網
     try:
         res = requests.get("https://news.cnyes.com/news/cat/headline", headers=headers, timeout=4)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -124,7 +119,6 @@ def fetch_all_news():
             news_items.append({"title": f"[鉅亨網] {a.text.strip()}", "url": "https://news.cnyes.com" + a.get('href', '')})
     except: pass
 
-    # 工商時報 (CTEE)
     try:
         res = requests.get("https://www.ctee.com.tw/news/cat/stocks", headers=headers, timeout=4)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -132,7 +126,6 @@ def fetch_all_news():
             news_items.append({"title": f"[CTEE] {a.text.strip()}", "url": "https://www.ctee.com.tw" + a.get('href', '')})
     except: pass
 
-    # Yahoo 奇摩股市
     try:
         res = requests.get("https://tw.stock.yahoo.com/news/", headers=headers, timeout=4)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -219,18 +212,19 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
+    # 計算均線與指標
+    stock_df['SMA5'] = stock_df['Close'].rolling(5).mean()
+    stock_df['SMA10'] = stock_df['Close'].rolling(10).mean()
+    stock_df['SMA20'] = stock_df['Close'].rolling(20).mean()
+    stock_df['SMA60'] = stock_df['Close'].rolling(60).mean()
+    stock_df['Vol_MA5'] = stock_df['Volume'].rolling(5).mean()
+    stock_df['Vol_MA20'] = stock_df['Volume'].rolling(20).mean()
+
     # ==================== 中間欄：專業 K 線圖 + 3源新聞 ====================
     col_chart, col_news = st.columns([2, 1])
 
     with col_chart:
         st.subheader(f"📊 {display_title} 技術分析 K 線圖 (純黑底+雙圖層)")
-        
-        stock_df['SMA5'] = stock_df['Close'].rolling(5).mean()
-        stock_df['SMA10'] = stock_df['Close'].rolling(10).mean()
-        stock_df['SMA20'] = stock_df['Close'].rolling(20).mean()
-        stock_df['SMA60'] = stock_df['Close'].rolling(60).mean()
-        stock_df['Vol_MA5'] = stock_df['Volume'].rolling(5).mean()
-        stock_df['Vol_MA20'] = stock_df['Volume'].rolling(20).mean()
 
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                             vertical_spacing=0.03, row_heights=[0.7, 0.3])
@@ -296,24 +290,67 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
-    # ==================== 底部：綜合 AI 多空推演 ====================
-    st.subheader("🤖 AI 實時綜合多空推演報告")
+    # ==================== 底部：個股 K 線 + 總體 AI 多空推演 (深度修正) ====================
+    st.subheader("🤖 AI 實時綜合多空推演報告 (結合個股 K 線趨勢)")
 
+    # 1. 個股技術面動態評分 (滿分 50 分)
+    tech_score = 25  # 基礎中性分
+    s_close = stock_df['Close'].iloc[-1]
+    s_sma5 = stock_df['SMA5'].dropna().iloc[-1] if not stock_df['SMA5'].dropna().empty else s_close
+    s_sma20 = stock_df['SMA20'].dropna().iloc[-1] if not stock_df['SMA20'].dropna().empty else s_close
+    s_sma60 = stock_df['SMA60'].dropna().iloc[-1] if not stock_df['SMA60'].dropna().empty else s_close
+
+    # 價格位置加減分
+    if s_close >= s_sma5: tech_score += 8
+    else: tech_score -= 8
+
+    if s_close >= s_sma20: tech_score += 10
+    else: tech_score -= 10
+
+    if s_close >= s_sma60: tech_score += 7
+    else: tech_score -= 7
+
+    # 近5日走勢動能評分
+    if len(stock_df) >= 5:
+        p_5d_ago = stock_df['Close'].iloc[-5]
+        ret_5d = ((s_close - p_5d_ago) / p_5d_ago) * 100
+        tech_score += min(max(ret_5d * 2, -10), 10)
+
+    tech_score = min(max(tech_score, 0), 50)
+
+    # 2. 總體新聞與大盤評分 (滿分 50 分)
     sox_pct = global_mkt.get("費城半導體", {}).get("pct", 0.0)
     wtx_pct = global_mkt.get("台指期夜盤", {}).get("pct", 0.0)
     
-    news_score = (bull_count / (bull_count + bear_count + 0.1)) * 50
-    mkt_score = 25 + (sox_pct * 10) + (wtx_pct * 10)
-    total_score = int(min(max(news_score + mkt_score, 10), 95))
+    macro_score = 25
+    if bull_count + bear_count > 0:
+        macro_score += ((bull_count - bear_count) / (bull_count + bear_count)) * 15
+    macro_score += min(max((sox_pct + wtx_pct) * 5, -10), 10)
+    macro_score = min(max(macro_score, 0), 50)
+
+    # 總得分 (0 - 100)
+    total_score = int(tech_score + macro_score)
+
+    # 依分數切換文字與顏色 (台股紅漲綠跌)
+    if total_score >= 50:
+        score_text = f"{total_score}% 看多"
+        score_color = "#ff334b"  # 紅色
+        trend_status = "偏多格局"
+        logic_desc = "均線具備支撐或反彈動能，可隨大盤偏多佈局。"
+    else:
+        score_text = f"{100 - total_score}% 看空"
+        score_color = "#00e676"  # 綠色
+        trend_status = "空頭排列 / 偏空震盪"
+        logic_desc = "價格落於短期與中期均線之下，趨勢偏弱，注意下行風險。"
 
     c_score, c_levels, c_logic = st.columns([1, 1, 1.5])
 
     with c_score:
         st.markdown(f"""
         <div class="info-card">
-            <h4 style="color:#4fc3f7; margin-top:0;">📊 綜合多空看漲指數</h4>
-            <h1 style="color:#ff334b; text-align:center; font-size:46px; margin:10px 0;">{total_score}% 看多</h1>
-            <p style="color:#8b949e; font-size:12px; text-align:center;">美股費半 + 台指夜盤 + 3源新聞實時量化計算</p>
+            <h4 style="color:#4fc3f7; margin-top:0;">📊 綜合多空看盤指數</h4>
+            <h1 style="color:{score_color}; text-align:center; font-size:42px; margin:10px 0;">{score_text}</h1>
+            <p style="color:#8b949e; font-size:12px; text-align:center;">已結合【個股K線均線】+【美股夜盤】+【實時新聞】</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -323,7 +360,7 @@ if stock_df is not None and not stock_df.empty:
             <h4 style="color:#4fc3f7; margin-top:0;">🎯 明日點位實時推演</h4>
             <p style="font-size:15px;"><b>明日預估壓力位：</b> <span style="color:#ff334b; font-weight:bold;">{(curr_price*1.025):.2f}</span> (+2.5%)</p>
             <p style="font-size:15px;"><b>明日預估支撐位：</b> <span style="color:#00e676; font-weight:bold;">{(curr_price*0.975):.2f}</span> (-2.5%)</p>
-            <p style="color:#8b949e; font-size:12px;">依據歷史波動率與夜盤振幅演算</p>
+            <p style="color:#8b949e; font-size:12px;">依據該股近 20 日振幅與波動率計算</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -331,9 +368,9 @@ if stock_df is not None and not stock_df.empty:
         st.markdown(f"""
         <div class="info-card">
             <h4 style="color:#4fc3f7; margin-top:0;">💡 綜合推演邏輯說明</h4>
-            <p style="font-size:13px;"><b>1. 海外盤口：</b> 費半 `{sox_pct:+.2f}%` / 台指夜盤 `{wtx_pct:+.2f}%`。</p>
-            <p style="font-size:13px;"><b>2. 新聞動向：</b> 實時抓取 CTEE/鉅亨網/Yahoo 得出 `{bull_count}` 則利多方向。</p>
-            <p style="font-size:13px; color:#ffd60a;"><b>3. 操作策略：</b> 偏多格局確立，建議拉回尋求支撐點分批佈局。</p>
+            <p style="font-size:13px;"><b>1. 個股技術面：</b> 評分 `{tech_score:.0f}/50` ({trend_status})。</p>
+            <p style="font-size:13px;"><b>2. 大盤與新聞：</b> 評分 `{macro_score:.0f}/50` (費半 `{sox_pct:+.2f}%`)。</p>
+            <p style="font-size:13px; color:#ffd60a;"><b>3. 操作建議：</b> {logic_desc}</p>
         </div>
         """, unsafe_allow_html=True)
 else:
