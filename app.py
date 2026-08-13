@@ -9,39 +9,26 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 from bs4 import BeautifulSoup
-import json
 
-# 1. 頁面配置與高對比 CSS 樣式修正
+# 1. 頁面配置與高對比 CSS 樣式
 st.set_page_config(page_title="三竹專業版 - 台股與美股夜盤 AI 戰報", layout="wide", page_icon="📈")
 
 st.markdown("""
 <style>
-    /* 全局深色背景 */
     .stApp { background-color: #0a0c10; color: #ffffff !important; }
-    
-    /* 側邊欄專屬背景 */
-    [data-testid="stSidebar"] {
-        background-color: #12161f !important;
-    }
-    
-    /* 側邊欄標題與文字 */
+    [data-testid="stSidebar"] { background-color: #12161f !important; }
     [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, 
     [data-testid="stSidebar"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] span {
         color: #ffffff !important;
     }
-
-    /* 修正輸入框背景與文字顏色 */
     div[data-baseweb="input"] > div, input {
         background-color: #1e2638 !important;
         color: #ffffff !important;
         border-color: #3b475d !important;
     }
-
-    /* 主體文字與連結 */
     h1, h2, h3, h4, h5, h6, p, span, label { color: #ffffff !important; }
     a { color: #4fc3f7 !important; font-weight: bold; text-decoration: underline; }
     
-    /* 頂部三竹報價卡片 */
     .quote-card {
         background-color: #12161f;
         padding: 14px 20px;
@@ -51,8 +38,6 @@ st.markdown("""
     }
     .price-up { color: #ff334b !important; font-size: 30px; font-weight: 800; }
     .price-down { color: #00e676 !important; font-size: 30px; font-weight: 800; }
-    
-    /* 下方戰報卡片 */
     .info-card {
         background-color: #12161f;
         padding: 16px;
@@ -60,7 +45,6 @@ st.markdown("""
         border: 1px solid #2a313d;
         margin-bottom: 15px;
     }
-    
     div[data-testid="stMetricLabel"] > label { color: #8b949e !important; font-size: 13px !important; }
     div[data-testid="stMetricValue"] { color: #ffffff !important; font-weight: bold !important; }
 </style>
@@ -71,7 +55,6 @@ st.sidebar.header("🔍 股票與全球行情")
 raw_input = st.sidebar.text_input("輸入股票代碼或中文名稱 (例: 台積電, 3354, NVDA)", value="3354")
 timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
 
-# 3. 中文名稱與代碼雙向對照表
 COMMON_NAMES = {
     "2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科", 
     "8112.TWO": "至上", "8112.TW": "至上", "2382.TW": "廣達", 
@@ -90,11 +73,9 @@ def resolve_input_to_symbol(user_input):
     query = user_input.strip()
     if not query:
         return "3354.TWO"
-    
     for name, sym in NAME_TO_SYMBOL.items():
         if query == name or query in name:
             return sym
-            
     if any('\u4e00' <= char <= '\u9fff' for char in query):
         try:
             url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=3"
@@ -110,7 +91,6 @@ def resolve_input_to_symbol(user_input):
                 return quotes[0].get("symbol", query)
         except:
             pass
-            
     return query
 
 @st.cache_data(ttl=3600)
@@ -131,7 +111,6 @@ def fetch_tw_chinese_name(code_num):
 
 def fetch_smart_stock(user_symbol, tf):
     code = resolve_input_to_symbol(user_symbol).upper()
-        
     candidates = []
     if "." in code or "^" in code or not code.isdigit():
         candidates.append(code)
@@ -150,26 +129,23 @@ def fetch_smart_stock(user_symbol, tf):
                 clean_num = sym.split('.')[0].replace('^', '')
                 if not stock_name and clean_num.isdigit():
                     stock_name = fetch_tw_chinese_name(clean_num)
-                
                 if not stock_name:
                     try:
                         info = tk.info
                         stock_name = info.get('shortName') or info.get('longName') or ""
                     except:
                         stock_name = ""
-                
                 display_title = f"{stock_name} ({sym})" if stock_name else sym
                 return df, sym, display_title
         except:
             continue
     return None, code, code
 
-# 4. 新聞抓取
+# 3. 新聞抓取
 @st.cache_data(ttl=300)
 def fetch_all_news():
     news_items = []
     headers = {"User-Agent": "Mozilla/5.0"}
-    
     try:
         res = requests.get("https://news.cnyes.com/news/cat/headline", headers=headers, timeout=4)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -184,16 +160,6 @@ def fetch_all_news():
             news_items.append({"title": f"[CTEE] {a.text.strip()}", "url": "https://www.ctee.com.tw" + a.get('href', '')})
     except: pass
 
-    try:
-        res = requests.get("https://tw.stock.yahoo.com/news/", headers=headers, timeout=4)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for a in soup.select('h3 a')[:3]:
-            if a.text.strip():
-                url = a.get('href', '')
-                if not url.startswith("http"): url = "https://tw.stock.yahoo.com" + url
-                news_items.append({"title": f"[Yahoo股市] {a.text.strip()}", "url": url})
-    except: pass
-
     if not news_items:
         news_items = [
             {"title": "[CTEE] 半導體先進封裝動能強勁，台股權值股有撐", "url": "https://www.ctee.com.tw/"},
@@ -202,45 +168,41 @@ def fetch_all_news():
         ]
     return news_items
 
-# 🎯 強力台指期夜盤抓取（第一線：玩股網 API，第二線：鉅亨網）
+# 🎯 突破防護牆的台指期夜盤抓取邏輯
 def fetch_wtx_night():
-    # 1. 第一線：玩股網 WantGoo API (最穩定不封鎖)
-    try:
-        url = "https://www.wantgoo.com/invest/futures/WTX%26/quote"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://www.wantgoo.com/futures/wtx&"
-        }
-        res = requests.get(url, headers=headers, timeout=3)
-        if res.status_code == 200:
-            data = res.json()
-            price = float(data.get("price", 0))
-            change = float(data.get("change", 0))
-            pct = float(data.get("changePercent", 0))
-            if price > 0:
-                return {"price": price, "change": change, "pct": pct}
-    except:
-        pass
+    # 1. 優先使用 Yahoo Finance API 抓取台指期夜盤連續合約 (TX=F / WTX=F)
+    for ticker_symbol in ["TX=F", "WTX=F"]:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_symbol}?interval=1m&range=1d"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            res = requests.get(url, headers=headers, timeout=3)
+            if res.status_code == 200:
+                meta = res.json()["chart"]["result"][0]["meta"]
+                curr = float(meta.get("regularMarketPrice", 0))
+                prev = float(meta.get("chartPreviousClose", meta.get("previousClose", curr)))
+                if curr > 0:
+                    chg = curr - prev
+                    pct = (chg / prev) * 100 if prev else 0.0
+                    return {"price": curr, "change": chg, "pct": pct}
+        except:
+            pass
 
-    # 2. 第二線：鉅亨網真實 API (附帶完整的 Browser Headers)
-    try:
-        url = "https://ws.cnyes.com/ws/api/v1/quote/quotes/FUTURE:WTX%26:FUTURE"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Origin": "https://news.cnyes.com",
-            "Referer": "https://news.cnyes.com/"
-        }
-        res = requests.get(url, headers=headers, timeout=3)
-        data = res.json()
-        if "items" in data and len(data["items"]) > 0:
-            item = data["items"][0]
-            price = float(item.get("price", 0))
-            change = float(item.get("change", 0))
-            pct = float(item.get("changePercent", 0))
-            if price > 0:
-                return {"price": price, "change": change, "pct": pct}
-    except:
-        pass
+    # 2. 備援：透過 yfinance 套件抓取
+    for ticker_symbol in ["TX=F", "^TWII"]:
+        try:
+            tk = yf.Ticker(ticker_symbol)
+            df = tk.history(period="2d", interval="1m")
+            if df.empty:
+                df = tk.history(period="2d")
+            if len(df) >= 1:
+                curr = float(df['Close'].iloc[-1])
+                prev = float(df['Close'].iloc[-2]) if len(df) > 1 else curr
+                chg = curr - prev
+                pct = (chg / prev) * 100 if prev else 0.0
+                if curr > 0:
+                    return {"price": curr, "change": chg, "pct": pct}
+        except:
+            pass
 
     return None
 
@@ -248,14 +210,14 @@ def fetch_wtx_night():
 def fetch_global_markets():
     results = {}
     
-    # 1. 台指期夜盤
+    # 台指期夜盤
     wtx_data = fetch_wtx_night()
     if wtx_data and wtx_data["price"] > 0:
         results["台指期夜盤"] = wtx_data
     else:
         results["台指期夜盤"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
 
-    # 2. 台積電 ADR
+    # 台積電 ADR
     try:
         tsm_df = yf.Ticker("TSM").history(period="2d")
         if len(tsm_df) >= 1:
@@ -269,7 +231,7 @@ def fetch_global_markets():
     except:
         results["台積電ADR"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
 
-    # 3. 美股三大指數
+    # 美股三大指數
     markets = {"費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
     for name, sym in markets.items():
         try:
@@ -325,7 +287,7 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
-    # ==================== 美股與台指夜盤即時行情 (5 欄獨立窗口) ====================
+    # ==================== 美股與台指夜盤即時行情 ====================
     st.subheader("🌐 美股與台指夜盤即時動態")
     g1, g2, g3, g4, g5 = st.columns(5)
     cols = [g1, g2, g3, g4, g5]
@@ -337,13 +299,13 @@ if stock_df is not None and not stock_df.empty:
             pct = data['pct']
             
             if chg > 0:
-                color = "#ff334b"  # 鮮紅色 (漲)
+                color = "#ff334b"
                 sign = "▲ +"
             elif chg < 0:
-                color = "#00e676"  # 鮮綠色 (跌)
+                color = "#00e676"
                 sign = "▼ "
             else:
-                color = "#ffffff"  # 平盤白色
+                color = "#ffffff"
                 sign = ""
                 
             chg_str = f"{sign}{chg:.2f} ({pct:+.2f}%)"
@@ -363,7 +325,7 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
-    # 計算均線與指標
+    # 計算均線
     stock_df['SMA5'] = stock_df['Close'].rolling(5).mean()
     stock_df['SMA10'] = stock_df['Close'].rolling(10).mean()
     stock_df['SMA20'] = stock_df['Close'].rolling(20).mean()
@@ -371,7 +333,7 @@ if stock_df is not None and not stock_df.empty:
     stock_df['Vol_MA5'] = stock_df['Volume'].rolling(5).mean()
     stock_df['Vol_MA20'] = stock_df['Volume'].rolling(20).mean()
 
-    # ==================== 中間欄：專業 K 線圖 + 3源新聞 ====================
+    # ==================== 中間欄：專業 K 線圖 + 新聞 ====================
     col_chart, col_news = st.columns([2, 1])
 
     with col_chart:
@@ -421,7 +383,7 @@ if stock_df is not None and not stock_df.empty:
         st.plotly_chart(fig, use_container_width=True)
 
     with col_news:
-        st.subheader("📰 CTEE / 鉅亨網 / Yahoo 實時新聞")
+        st.subheader("📰 實時市場新聞")
         bull_count = 0
         bear_count = 0
         for item in news_list:
@@ -442,7 +404,7 @@ if stock_df is not None and not stock_df.empty:
     st.markdown("---")
 
     # ==================== 底部：AI 多空推演 ====================
-    st.subheader("🤖 AI 實時綜合多空推演報告 (結合個股 K 線趨勢)")
+    st.subheader("🤖 AI 實時綜合多空推演報告")
 
     tech_score = 25
     s_close = stock_df['Close'].iloc[-1]
