@@ -1,3 +1,7 @@
+from streamlit_autorefresh import st_autorefresh
+
+# 每 10 秒自動抓取與刷新一次最新數據
+st_autorefresh(interval=10000, key="data_autorefresh")
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
