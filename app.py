@@ -170,34 +170,34 @@ def fetch_all_news():
         ]
     return news_items
 
-# 爬取台指期夜盤的專用邏輯 (Yahoo 股市爬蟲)
+# 爬取台指期夜盤的專用邏輯 (對接鉅亨網 Anue API)
 def fetch_wtx_night():
     try:
-        url = "https://tw.stock.yahoo.com/quote/WTX%26"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        res = requests.get(url, headers=headers, timeout=4)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # 尋找價格與漲跌幅
-        price_span = soup.find('span', class_=['Fz(32px)', 'Fz(36px)', 'Fz(28px)'])
-        if price_span:
-            price = float(price_span.text.replace(',', ''))
-            return price
+        url = "https://ws.cnyes.com/ws/api/v1/quote/quotes/FUTURE:WTX%26:FUTURE"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=3)
+        data = res.json()
+        if "items" in data and len(data["items"]) > 0:
+            item = data["items"][0]
+            price = float(item.get("price", 0))
+            change = float(item.get("change", 0))
+            pct = float(item.get("changePercent", 0))
+            return {"price": price, "change": change, "pct": pct}
     except:
         pass
     return None
 
-# 5. 美股與台指夜盤數據抓取（增強版）
+# 5. 美股與台指夜盤數據抓取
 def fetch_global_markets():
     markets = {"費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
     results = {}
     
-    # 1. 抓取台指期夜盤
-    wtx_price = fetch_wtx_night()
-    if wtx_price:
-        results["台指期夜盤"] = {"price": wtx_price, "change": 0.0, "pct": 0.0}
+    # 1. 抓取台指期夜盤 (鉅亨網 API)
+    wtx_data = fetch_wtx_night()
+    if wtx_data and wtx_data["price"] > 0:
+        results["台指期夜盤"] = wtx_data
     else:
-        # 如果爬不到台指期夜盤，改抓台積電 ADR (TSM) 做為夜盤指標
+        # 備援：抓取台積電 ADR (TSM)
         try:
             tsm_df = yf.Ticker("TSM").history(period="2d")
             curr = tsm_df['Close'].iloc[-1]
@@ -267,7 +267,7 @@ if stock_df is not None and not stock_df.empty:
     idx = 0
     for mkt_name, data in global_mkt.items():
         val_str = f"{data['price']:.2f}" if data['price'] > 0 else "連線中"
-        chg_str = f"{data['change']:+.2f} ({data['pct']:+.2f}%)" if data['change'] != 0 else "即時報價"
+        chg_str = f"{data['change']:+.2f} ({data['pct']:+.2f}%)" if data['price'] > 0 else "即時報價"
         cols[idx].metric(mkt_name, val_str, chg_str)
         idx += 1
 
