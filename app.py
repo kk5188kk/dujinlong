@@ -9,7 +9,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 from bs4 import BeautifulSoup
-import re
 import json
 
 # 1. 頁面配置與高對比 CSS 樣式修正
@@ -203,48 +202,34 @@ def fetch_all_news():
         ]
     return news_items
 
-# 從 Yahoo 股市/API 專用解析台指期
-def fetch_wtx_yahoo():
-    try:
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/WTX=F"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=3)
-        data = res.json()
-        meta = data['chart']['result'][0]['meta']
-        price = float(meta.get('regularMarketPrice', 0))
-        prev = float(meta.get('chartPreviousClose', price))
-        if price > 0:
-            chg = price - prev
-            pct = (chg / prev) * 100 if prev else 0.0
-            return {"price": price, "change": chg, "pct": pct}
-    except:
-        pass
-
-    try:
-        url = "https://tw.stock.yahoo.com/quote/WTX%26"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        res = requests.get(url, headers=headers, timeout=3)
-        match = re.search(r'root\.App\.main\s*=\s*({.*?});</script>', res.text)
-        if match:
-            raw_json = json.loads(match.group(1))
-            stores = raw_json.get('context', {}).get('dispatcher', {}).get('stores', {})
-            price_store = stores.get('QuoteSummaryStore', {}).get('price', {})
-            price = float(price_store.get('regularMarketPrice', {}).get('raw', 0))
-            chg = float(price_store.get('regularMarketChange', {}).get('raw', 0))
-            pct = float(price_store.get('regularMarketChangePercent', {}).get('raw', 0)) * 100
-            if price > 0:
-                return {"price": price, "change": chg, "pct": pct}
-    except:
-        pass
-
-    return None
-
-# 爬取台指期夜盤 (雙備援機制)
+# 🎯 強力台指期夜盤抓取（第一線：玩股網 API，第二線：鉅亨網）
 def fetch_wtx_night():
-    # 1. 鉅亨網 API
+    # 1. 第一線：玩股網 WantGoo API (最穩定不封鎖)
+    try:
+        url = "https://www.wantgoo.com/invest/futures/WTX%26/quote"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.wantgoo.com/futures/wtx&"
+        }
+        res = requests.get(url, headers=headers, timeout=3)
+        if res.status_code == 200:
+            data = res.json()
+            price = float(data.get("price", 0))
+            change = float(data.get("change", 0))
+            pct = float(data.get("changePercent", 0))
+            if price > 0:
+                return {"price": price, "change": change, "pct": pct}
+    except:
+        pass
+
+    # 2. 第二線：鉅亨網真實 API (附帶完整的 Browser Headers)
     try:
         url = "https://ws.cnyes.com/ws/api/v1/quote/quotes/FUTURE:WTX%26:FUTURE"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Origin": "https://news.cnyes.com",
+            "Referer": "https://news.cnyes.com/"
+        }
         res = requests.get(url, headers=headers, timeout=3)
         data = res.json()
         if "items" in data and len(data["items"]) > 0:
@@ -257,25 +242,20 @@ def fetch_wtx_night():
     except:
         pass
 
-    # 2. Yahoo 股市 API / 網頁爬蟲
-    yahoo_data = fetch_wtx_yahoo()
-    if yahoo_data and yahoo_data["price"] > 0:
-        return yahoo_data
-
     return None
 
-# 全球行情抓取（保持 5 個窗口全部獨立）
+# 全球行情抓取
 def fetch_global_markets():
     results = {}
     
-    # 1. 台指期夜盤窗口
+    # 1. 台指期夜盤
     wtx_data = fetch_wtx_night()
     if wtx_data and wtx_data["price"] > 0:
         results["台指期夜盤"] = wtx_data
     else:
         results["台指期夜盤"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
 
-    # 2. 台積電 ADR 窗口
+    # 2. 台積電 ADR
     try:
         tsm_df = yf.Ticker("TSM").history(period="2d")
         if len(tsm_df) >= 1:
@@ -289,7 +269,7 @@ def fetch_global_markets():
     except:
         results["台積電ADR"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
 
-    # 3. 美股三大指數窗口
+    # 3. 美股三大指數
     markets = {"費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
     for name, sym in markets.items():
         try:
@@ -345,14 +325,14 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
-    # ==================== 美股與台指夜盤即時行情 (獨立 5 欄窗口) ====================
+    # ==================== 美股與台指夜盤即時行情 (5 欄獨立窗口) ====================
     st.subheader("🌐 美股與台指夜盤即時動態")
     g1, g2, g3, g4, g5 = st.columns(5)
     cols = [g1, g2, g3, g4, g5]
     idx = 0
     for mkt_name, data in global_mkt.items():
         if data['price'] > 0:
-            price_str = f"{data['price']:.2f}"
+            price_str = f"{data['price']:,.2f}"
             chg = data['change']
             pct = data['pct']
             
@@ -368,8 +348,8 @@ if stock_df is not None and not stock_df.empty:
                 
             chg_str = f"{sign}{chg:.2f} ({pct:+.2f}%)"
         else:
-            price_str = "盤後/休市"
-            chg_str = "即時連線中"
+            price_str = "更新中"
+            chg_str = "連線嘗試中"
             color = "#8b949e"
 
         cols[idx].markdown(f"""
