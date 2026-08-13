@@ -65,18 +65,56 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 2. 側邊欄控制器
+# 2. 側邊欄控制器（已更新提示語）
 st.sidebar.header("🔍 股票與全球行情")
-raw_input = st.sidebar.text_input("輸入股票代碼 (例: 3354, 3715, NVDA)", value="3354")
+raw_input = st.sidebar.text_input("輸入股票代碼或中文名稱 (例: 台積電, 3354, NVDA)", value="3354")
 timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
 
-# 3. 常用中文對照 + Yahoo 奇摩股市台股中文名稱自動解析器
+# 3. 中文名稱與代碼雙向對照表
 COMMON_NAMES = {
     "2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科", 
     "8112.TWO": "至上", "8112.TW": "至上", "2382.TW": "廣達", 
     "3231.TW": "緯創", "0050.TW": "元大台灣50", "^TWII": "加權指數", 
     "3026.TW": "禾伸堂", "3715.TW": "定穎投控", "3354.TWO": "律勝", "3354.TW": "律勝"
 }
+
+# 中文轉代碼反向對照表
+NAME_TO_SYMBOL = {
+    "台積電": "2330.TW", "鴻海": "2317.TW", "聯發科": "2454.TW",
+    "至上": "8112.TWO", "廣達": "2382.TW", "緯創": "3231.TW",
+    "元大台灣50": "0050.TW", "加權指數": "^TWII", "禾伸堂": "3026.TW",
+    "定穎投控": "3715.TW", "定穎": "3715.TW", "律勝": "3354.TWO"
+}
+
+def resolve_input_to_symbol(user_input):
+    """將使用者輸入（中文或數字）解析為股票代碼"""
+    query = user_input.strip()
+    if not query:
+        return "3354.TWO"
+    
+    # 1. 先查常用中文名稱對照表
+    for name, sym in NAME_TO_SYMBOL.items():
+        if query == name or query in name:
+            return sym
+            
+    # 2. 若包含中文字，調用 Yahoo API 線上解析中文代碼
+    if any('\u4e00' <= char <= '\u9fff' for char in query):
+        try:
+            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=3"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            res = requests.get(url, headers=headers, timeout=3)
+            data = res.json()
+            quotes = data.get("quotes", [])
+            for q in quotes:
+                sym = q.get("symbol", "")
+                if sym.endswith(".TW") or sym.endswith(".TWO"):
+                    return sym
+            if quotes:
+                return quotes[0].get("symbol", query)
+        except:
+            pass
+            
+    return query
 
 @st.cache_data(ttl=3600)
 def fetch_tw_chinese_name(code_num):
@@ -96,9 +134,8 @@ def fetch_tw_chinese_name(code_num):
     return ""
 
 def fetch_smart_stock(user_symbol, tf):
-    code = user_symbol.strip().upper()
-    if not code:
-        code = "3354"
+    # 解析中文或數字代碼
+    code = resolve_input_to_symbol(user_symbol).upper()
         
     candidates = []
     if "." in code or "^" in code or not code.isdigit():
@@ -260,7 +297,7 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
-    # ==================== 美股與台指夜盤即時行情 (改為台股紅漲綠跌卡片) ====================
+    # ==================== 美股與台指夜盤即時行情 (台股紅漲綠跌卡片) ====================
     st.subheader("🌐 美股與台指夜盤即時動態")
     g1, g2, g3, g4 = st.columns(4)
     cols = [g1, g2, g3, g4]
@@ -456,4 +493,4 @@ if stock_df is not None and not stock_df.empty:
         </div>
         """, unsafe_allow_html=True)
 else:
-    st.error(f"暫時無法獲取股票數據（查詢代碼: {raw_input}），請確認代碼是否輸入正確。")
+    st.error(f"暫時無法獲取股票數據（查詢輸入: {raw_input}），請確認名稱或代碼是否正確。")
