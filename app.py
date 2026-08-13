@@ -24,19 +24,13 @@ st.markdown("""
         color: #ffffff !important;
     }
 
-    /* 修正輸入框與下拉選單背景與文字顏色 */
-    div[data-baseweb="select"] > div, div[data-baseweb="input"] > div, input {
+    /* 修正輸入框背景與文字顏色 */
+    div[data-baseweb="input"] > div, input {
         background-color: #1e2638 !important;
         color: #ffffff !important;
         border-color: #3b475d !important;
     }
 
-    /* 下拉選項文字與背景 */
-    div[data-baseweb="popover"] *, div[role="listbox"] * {
-        background-color: #1e2638 !important;
-        color: #ffffff !important;
-    }
-    
     /* 主體文字與連結 */
     h1, h2, h3, h4, h5, h6, p, span, label { color: #ffffff !important; }
     a { color: #4fc3f7 !important; font-weight: bold; text-decoration: underline; }
@@ -66,21 +60,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 2. 側邊欄控制器 (搜尋框常駐固定)
+# 2. 側邊欄控制器 (僅保留單一精準搜尋框)
 st.sidebar.header("🔍 股票與全球行情")
 
-# 固定長駐輸入框，不需每次手動選取展開
-user_input = st.sidebar.text_input("📌 輸入股票代碼 (直接輸入無需點選)", value="3026")
-
-quick_stock = st.sidebar.selectbox(
-    "快速點選熱門股 (選填)", 
-    ["直接使用上方輸入框", "2330 (台積電)", "2317 (鴻海)", "2454 (聯發科)", "3026 (禾伸堂)", "8112 (至上)", "2382 (廣達)", "3231 (緯創)", "0050 (元大台灣50)", "^TWII (加權指數)"]
-)
-
-if quick_stock != "直接使用上方輸入框":
-    raw_input = quick_stock.split(" ")[0]
-else:
-    raw_input = user_input
+# 只留一個搜尋框，使用者打什麼就搜什麼
+raw_input = st.sidebar.text_input("輸入股票代碼 (例: 3715, 2330, NVDA)", value="3715")
 
 timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
 
@@ -89,13 +73,13 @@ COMMON_NAMES = {
     "2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科", 
     "8112.TWO": "至上", "8112.TW": "至上", "2382.TW": "廣達", 
     "3231.TW": "緯創", "0050.TW": "元大台灣50", "^TWII": "加權指數", 
-    "3026.TW": "禾伸堂", "3026.TWO": "禾伸堂"
+    "3026.TW": "禾伸堂", "3026.TWO": "禾伸堂", "3715.TW": "定穎投控", "3715.TWO": "定穎投控"
 }
 
 def fetch_smart_stock(user_symbol, tf):
     code = user_symbol.strip().upper()
     if not code:
-        code = "3026"
+        code = "3715"
         
     candidates = []
     if "." in code or "^" in code or not code.isdigit():
