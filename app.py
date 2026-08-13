@@ -5,7 +5,7 @@ from plotly.subplots import make_subplots
 import requests
 from bs4 import BeautifulSoup
 
-# 1. 頁面配置與精準 CSS 樣式修正 (徹底解決白底白字問題)
+# 1. 頁面配置與高對比 CSS 樣式修正
 st.set_page_config(page_title="三竹專業版 - 台股與美股夜盤 AI 戰報", layout="wide", page_icon="📈")
 
 st.markdown("""
@@ -24,7 +24,7 @@ st.markdown("""
         color: #ffffff !important;
     }
 
-    /* 修正輸入框與下拉選單背景與文字顏色 (解決白底白字問題) */
+    /* 修正輸入框與下拉選單背景與文字顏色 */
     div[data-baseweb="select"] > div, div[data-baseweb="input"] > div, input {
         background-color: #1e2638 !important;
         color: #ffffff !important;
@@ -66,25 +66,36 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 2. 側邊欄控制器
+# 2. 側邊欄控制器 (搜尋框常駐固定)
 st.sidebar.header("🔍 股票與全球行情")
+
+# 固定長駐輸入框，不需每次手動選取展開
+user_input = st.sidebar.text_input("📌 輸入股票代碼 (直接輸入無需點選)", value="3026")
+
 quick_stock = st.sidebar.selectbox(
-    "選擇快速選股或自訂", 
-    ["2330.TW (台積電)", "2317.TW (鴻海)", "2454.TW (聯發科)", "8112.TWO (至上)", "2382.TW (廣達)", "3231.TW (緯創)", "0050.TW (元大台灣50)", "^TWII (加權指數)", "自訂搜尋"]
+    "快速點選熱門股 (選填)", 
+    ["直接使用上方輸入框", "2330 (台積電)", "2317 (鴻海)", "2454 (聯發科)", "3026 (禾伸堂)", "8112 (至上)", "2382 (廣達)", "3231 (緯創)", "0050 (元大台灣50)", "^TWII (加權指數)"]
 )
 
-if quick_stock == "自訂搜尋":
-    raw_input = st.sidebar.text_input("輸入股票代碼 (例如: 2330, 8112, NVDA)", value="8112")
-else:
+if quick_stock != "直接使用上方輸入框":
     raw_input = quick_stock.split(" ")[0]
+else:
+    raw_input = user_input
 
 timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
 
-# 3. 智慧股票數據獲取 (自動判斷 上市 .TW / 上櫃 .TWO / 美股)
+# 3. 常用中文名稱對照表與自動股票名稱解析
+COMMON_NAMES = {
+    "2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科", 
+    "8112.TWO": "至上", "8112.TW": "至上", "2382.TW": "廣達", 
+    "3231.TW": "緯創", "0050.TW": "元大台灣50", "^TWII": "加權指數", 
+    "3026.TW": "禾伸堂", "3026.TWO": "禾伸堂"
+}
+
 def fetch_smart_stock(user_symbol, tf):
     code = user_symbol.strip().upper()
     if not code:
-        code = "2330.TW"
+        code = "3026"
         
     candidates = []
     if "." in code or "^" in code or not code.isdigit():
@@ -92,18 +103,28 @@ def fetch_smart_stock(user_symbol, tf):
         candidates.append(f"{code}.TW")
         candidates.append(f"{code}.TWO")
     else:
-        # 數字代碼：優先測試上市 (.TW) 再測試上櫃 (.TWO)
         candidates.append(f"{code}.TW")
         candidates.append(f"{code}.TWO")
 
     for sym in candidates:
         try:
-            df = yf.Ticker(sym).history(period=tf)
+            tk = yf.Ticker(sym)
+            df = tk.history(period=tf)
             if not df.empty:
-                return df, sym
+                # 獲取股票中文/英文名稱
+                stock_name = COMMON_NAMES.get(sym, "")
+                if not stock_name:
+                    try:
+                        info = tk.info
+                        stock_name = info.get('shortName') or info.get('longName') or ""
+                    except:
+                        stock_name = ""
+                
+                display_title = f"{stock_name} ({sym})" if stock_name else sym
+                return df, sym, display_title
         except:
             continue
-    return None, code
+    return None, code, code
 
 # 4. 三大新聞源數據抓取 (CTEE, 鉅亨網, Yahoo股市)
 @st.cache_data(ttl=300)
@@ -163,7 +184,7 @@ def fetch_global_markets():
             results[name] = {"price": 0.0, "change": 0.0, "pct": 0.0}
     return results
 
-stock_df, valid_symbol = fetch_smart_stock(raw_input, timeframe)
+stock_df, valid_symbol, display_title = fetch_smart_stock(raw_input, timeframe)
 global_mkt = fetch_global_markets()
 news_list = fetch_all_news()
 
@@ -181,7 +202,7 @@ if stock_df is not None and not stock_df.empty:
     <div class="quote-card">
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
-                <span style="font-size: 26px; font-weight: 800;">{valid_symbol}</span>
+                <span style="font-size: 26px; font-weight: 800; color: #ffffff;">{display_title}</span>
                 <span style="color: #00e676; margin-left: 10px; font-size:14px; font-weight: bold;">● 實時盤口</span>
             </div>
             <div>
@@ -214,11 +235,11 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
-    # ==================== 中間欄：圖二同款專業 K 線圖 + 3源新聞 ====================
+    # ==================== 中間欄：專業 K 線圖 + 3源新聞 ====================
     col_chart, col_news = st.columns([2, 1])
 
     with col_chart:
-        st.subheader(f"📊 {valid_symbol} 技術分析 K 線圖 (純黑底+雙圖層)")
+        st.subheader(f"📊 {display_title} 技術分析 K 線圖 (純黑底+雙圖層)")
         
         stock_df['SMA5'] = stock_df['Close'].rolling(5).mean()
         stock_df['SMA10'] = stock_df['Close'].rolling(10).mean()
