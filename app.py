@@ -9,7 +9,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 from bs4 import BeautifulSoup
-import urllib.parse
 
 # 1. 頁面配置與高對比 CSS 樣式
 st.set_page_config(page_title="三竹專業版 - 台股與美股夜盤 AI 戰報", layout="wide", page_icon="📈")
@@ -53,68 +52,84 @@ st.markdown("""
 
 # 2. 側邊欄控制器
 st.sidebar.header("🔍 股票與全球行情")
-raw_input = st.sidebar.text_input("輸入股票代碼或中文名稱 (例: 聯電, 台積電, 3354, NVDA)", value="聯電")
+raw_input = st.sidebar.text_input("輸入股票代碼或中文名稱 (例: 台泥, 聯電, 2330, NVDA)", value="台泥")
 timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
 
-# 🎯 全台股通用中文轉代碼引擎
+# 🎯 載入證交所/櫃買中心官方全台股對照表 (24小時快取)
+@st.cache_data(ttl=86400)
+def load_all_tw_stocks():
+    stock_dict = {}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    
+    # 1. 上市股票清單 (證交所 OpenData)
+    try:
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL", headers=headers, timeout=5)
+        if res.status_code == 200:
+            for item in res.json():
+                code = item.get("Code", "").strip()
+                name = item.get("Name", "").strip()
+                if code and name:
+                    stock_dict[name] = f"{code}.TW"
+                    stock_dict[code] = f"{code}.TW"
+    except:
+        pass
+
+    # 2. 上櫃股票清單 (櫃買中心 OpenData)
+    try:
+        res = requests.get("https://www.tpex.org.tw/openapi/v1/mopsdd_result_108", headers=headers, timeout=5)
+        if res.status_code == 200:
+            for item in res.json():
+                code = item.get("SecuritiesCompanyCode", "").strip()
+                name = item.get("CompanyName", "").strip()
+                if code and name:
+                    stock_dict[name] = f"{code}.TWO"
+                    stock_dict[code] = f"{code}.TWO"
+    except:
+        pass
+
+    # 高頻熱門備用補強庫
+    backup_map = {
+        "台泥": "1101.TW", "亞泥": "1102.TW", "統一": "1216.TW", "台塑": "1301.TW", "南亞": "1303.TW",
+        "台化": "1326.TW", "中鋼": "2002.TW", "台積電": "2330.TW", "聯電": "2303.TW", "鴻海": "2317.TW",
+        "台達電": "2308.TW", "華碩": "2357.TW", "廣達": "2382.TW", "研華": "2395.TW", "聯發科": "2454.TW",
+        "長榮": "2603.TW", "陽明": "2609.TW", "萬海": "2615.TW", "富邦金": "2881.TW", "國泰金": "2882.TW",
+        "玉山金": "2884.TW", "兆豐金": "2886.TW", "中信金": "2891.TW", "大立光": "3008.TW", "緯創": "3231.TW",
+        "世芯-KY": "3661.TW", "創意": "3443.TW", "祥碩": "5269.TW", "緯穎": "6669.TW", "日月光投控": "3711.TW",
+        "加權指數": "^TWII", "元大台灣50": "0050.TW", "元大高股息": "0056.TW", "國泰永續高股息": "00878.TW",
+        "群益台灣精選高息": "00919.TW", "復華台灣科技優息": "00929.TW", "元大台灣價值高息": "00940.TW"
+    }
+    stock_dict.update(backup_map)
+    return stock_dict
+
+TW_STOCKS_DB = load_all_tw_stocks()
+
+# 🎯 智能解析所有輸入（中文、模糊名稱、純數字代碼）
 def resolve_input_to_symbol(user_input):
     query = user_input.strip()
     if not query:
-        return "2303.TW"
+        return "1101.TW"
         
-    # 如果輸入純數字，直接返回數字
-    if query.isdigit():
-        return query
+    # 精準匹配（包含簡稱或代碼）
+    if query in TW_STOCKS_DB:
+        return TW_STOCKS_DB[query]
 
-    # 常見熱門台股高頻對照庫
-    common_map = {
-        "台積電": "2330.TW", "聯電": "2303.TW", "鴻海": "2317.TW", "聯發科": "2454.TW",
-        "台達電": "2308.TW", "廣達": "2382.TW", "緯創": "3231.TW", "技嘉": "2376.TW",
-        "光寶科": "2301.TW", "長榮": "2603.TW", "陽明": "2609.TW", "萬海": "2615.TW",
-        "富邦金": "2881.TW", "國泰金": "2882.TW", "中信金": "2891.TW", "玉山金": "2884.TW",
-        "元大金": "2885.TW", "兆豐金": "2886.TW", "台塑": "1301.TW", "南亞": "1303.TW",
-        "中鋼": "2002.TW", "元大台灣50": "0050.TW", "元大高股息": "0056.TW", 
-        "國泰永續高股息": "00878.TW", "群益台灣精選高息": "00919.TW", "復華台灣科技優息": "00929.TW", 
-        "加權指數": "^TWII", "律勝": "3354.TWO", "至上": "8112.TWO", "禾伸堂": "3026.TW", 
-        "定穎": "3715.TW", "定穎投控": "3715.TW", "華碩": "2357.TW", "宏碁": "2353.TW"
-    }
-    
-    for name, sym in common_map.items():
-        if query == name or name in query:
+    # 模糊比對（如輸入「台泥」匹配「臺灣水泥」）
+    for name, sym in TW_STOCKS_DB.items():
+        if query in name or name in query:
             return sym
 
-    # 若非列表中熱門股，動態透過 Yahoo API 與網頁進行 URL 編碼搜尋 (支援全台股)
-    try:
-        encoded_query = urllib.parse.quote(query)
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        
-        # 線路 A: Yahoo API
-        url_a = f"https://query2.finance.yahoo.com/v1/finance/search?q={encoded_query}&quotesCount=5"
-        res = requests.get(url_a, headers=headers, timeout=3)
-        if res.status_code == 200:
-            quotes = res.json().get("quotes", [])
-            for q in quotes:
-                sym = q.get("symbol", "")
-                if sym.endswith(".TW") or sym.endswith(".TWO"):
-                    return sym
-
-        # 線路 B: Yahoo 股市搜尋頁面備援
-        url_b = f"https://tw.stock.yahoo.com/search?q={encoded_query}"
-        res_b = requests.get(url_b, headers=headers, timeout=3)
-        soup = BeautifulSoup(res_b.text, 'html.parser')
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            if '/quote/' in href:
-                code = href.split('/quote/')[1].split('?')[0].split('/')[0]
-                if code:
-                    return code
-    except:
-        pass
+    # 輸入純數字預設為 TW
+    if query.isdigit():
+        return f"{query}.TW"
 
     return query
 
 @st.cache_data(ttl=3600)
 def fetch_tw_chinese_name(code_num):
+    # 反向尋找官方中文名稱
+    for name, sym in TW_STOCKS_DB.items():
+        if sym.startswith(code_num) and not name.isdigit():
+            return name
     try:
         url = f"https://tw.stock.yahoo.com/quote/{code_num}"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -195,7 +210,7 @@ def fetch_all_news():
         ]
     return news_items
 
-# 🎯 防護牆突破：台指期夜盤行情抓取
+# 🎯 台指期夜盤行情抓取
 def fetch_wtx_night():
     for ticker_symbol in ["TX=F", "WTX=F"]:
         try:
