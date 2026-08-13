@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 from bs4 import BeautifulSoup
+import urllib.parse
 
 # 1. 頁面配置與高對比 CSS 樣式
 st.set_page_config(page_title="三竹專業版 - 台股與美股夜盤 AI 戰報", layout="wide", page_icon="📈")
@@ -52,45 +53,64 @@ st.markdown("""
 
 # 2. 側邊欄控制器
 st.sidebar.header("🔍 股票與全球行情")
-raw_input = st.sidebar.text_input("輸入股票代碼或中文名稱 (例: 台積電, 3354, NVDA)", value="3354")
+raw_input = st.sidebar.text_input("輸入股票代碼或中文名稱 (例: 聯電, 台積電, 3354, NVDA)", value="聯電")
 timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
 
-COMMON_NAMES = {
-    "2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科", 
-    "8112.TWO": "至上", "8112.TW": "至上", "2382.TW": "廣達", 
-    "3231.TW": "緯創", "0050.TW": "元大台灣50", "^TWII": "加權指數", 
-    "3026.TW": "禾伸堂", "3715.TW": "定穎投控", "3354.TWO": "律勝", "3354.TW": "律勝"
-}
-
-NAME_TO_SYMBOL = {
-    "台積電": "2330.TW", "鴻海": "2317.TW", "聯發科": "2454.TW",
-    "至上": "8112.TWO", "廣達": "2382.TW", "緯創": "3231.TW",
-    "元大台灣50": "0050.TW", "加權指數": "^TWII", "禾伸堂": "3026.TW",
-    "定穎投控": "3715.TW", "定穎": "3715.TW", "律勝": "3354.TWO"
-}
-
+# 🎯 全台股通用中文轉代碼引擎
 def resolve_input_to_symbol(user_input):
     query = user_input.strip()
     if not query:
-        return "3354.TWO"
-    for name, sym in NAME_TO_SYMBOL.items():
-        if query == name or query in name:
+        return "2303.TW"
+        
+    # 如果輸入純數字，直接返回數字
+    if query.isdigit():
+        return query
+
+    # 常見熱門台股高頻對照庫
+    common_map = {
+        "台積電": "2330.TW", "聯電": "2303.TW", "鴻海": "2317.TW", "聯發科": "2454.TW",
+        "台達電": "2308.TW", "廣達": "2382.TW", "緯創": "3231.TW", "技嘉": "2376.TW",
+        "光寶科": "2301.TW", "長榮": "2603.TW", "陽明": "2609.TW", "萬海": "2615.TW",
+        "富邦金": "2881.TW", "國泰金": "2882.TW", "中信金": "2891.TW", "玉山金": "2884.TW",
+        "元大金": "2885.TW", "兆豐金": "2886.TW", "台塑": "1301.TW", "南亞": "1303.TW",
+        "中鋼": "2002.TW", "元大台灣50": "0050.TW", "元大高股息": "0056.TW", 
+        "國泰永續高股息": "00878.TW", "群益台灣精選高息": "00919.TW", "復華台灣科技優息": "00929.TW", 
+        "加權指數": "^TWII", "律勝": "3354.TWO", "至上": "8112.TWO", "禾伸堂": "3026.TW", 
+        "定穎": "3715.TW", "定穎投控": "3715.TW", "華碩": "2357.TW", "宏碁": "2353.TW"
+    }
+    
+    for name, sym in common_map.items():
+        if query == name or name in query:
             return sym
-    if any('\u4e00' <= char <= '\u9fff' for char in query):
-        try:
-            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=3"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            res = requests.get(url, headers=headers, timeout=3)
-            data = res.json()
-            quotes = data.get("quotes", [])
+
+    # 若非列表中熱門股，動態透過 Yahoo API 與網頁進行 URL 編碼搜尋 (支援全台股)
+    try:
+        encoded_query = urllib.parse.quote(query)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        
+        # 線路 A: Yahoo API
+        url_a = f"https://query2.finance.yahoo.com/v1/finance/search?q={encoded_query}&quotesCount=5"
+        res = requests.get(url_a, headers=headers, timeout=3)
+        if res.status_code == 200:
+            quotes = res.json().get("quotes", [])
             for q in quotes:
                 sym = q.get("symbol", "")
                 if sym.endswith(".TW") or sym.endswith(".TWO"):
                     return sym
-            if quotes:
-                return quotes[0].get("symbol", query)
-        except:
-            pass
+
+        # 線路 B: Yahoo 股市搜尋頁面備援
+        url_b = f"https://tw.stock.yahoo.com/search?q={encoded_query}"
+        res_b = requests.get(url_b, headers=headers, timeout=3)
+        soup = BeautifulSoup(res_b.text, 'html.parser')
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if '/quote/' in href:
+                code = href.split('/quote/')[1].split('?')[0].split('/')[0]
+                if code:
+                    return code
+    except:
+        pass
+
     return query
 
 @st.cache_data(ttl=3600)
@@ -111,30 +131,37 @@ def fetch_tw_chinese_name(code_num):
 
 def fetch_smart_stock(user_symbol, tf):
     code = resolve_input_to_symbol(user_symbol).upper()
+    
     candidates = []
-    if "." in code or "^" in code or not code.isdigit():
+    if code.endswith(".TW") or code.endswith(".TWO") or code.startswith("^"):
         candidates.append(code)
+        if code.endswith(".TW"): candidates.append(code.replace(".TW", ".TWO"))
+        elif code.endswith(".TWO"): candidates.append(code.replace(".TWO", ".TW"))
+    elif code.isdigit():
         candidates.append(f"{code}.TW")
         candidates.append(f"{code}.TWO")
     else:
-        candidates.append(f"{code}.TWO")
+        candidates.append(code)
         candidates.append(f"{code}.TW")
+        candidates.append(f"{code}.TWO")
 
     for sym in candidates:
         try:
             tk = yf.Ticker(sym)
             df = tk.history(period=tf)
             if not df.empty:
-                stock_name = COMMON_NAMES.get(sym, "")
                 clean_num = sym.split('.')[0].replace('^', '')
-                if not stock_name and clean_num.isdigit():
+                stock_name = ""
+                if clean_num.isdigit():
                     stock_name = fetch_tw_chinese_name(clean_num)
+                
                 if not stock_name:
                     try:
                         info = tk.info
                         stock_name = info.get('shortName') or info.get('longName') or ""
                     except:
                         stock_name = ""
+                
                 display_title = f"{stock_name} ({sym})" if stock_name else sym
                 return df, sym, display_title
         except:
@@ -168,9 +195,8 @@ def fetch_all_news():
         ]
     return news_items
 
-# 🎯 突破防護牆的台指期夜盤抓取邏輯
+# 🎯 防護牆突破：台指期夜盤行情抓取
 def fetch_wtx_night():
-    # 1. 優先使用 Yahoo Finance API 抓取台指期夜盤連續合約 (TX=F / WTX=F)
     for ticker_symbol in ["TX=F", "WTX=F"]:
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_symbol}?interval=1m&range=1d"
@@ -187,7 +213,6 @@ def fetch_wtx_night():
         except:
             pass
 
-    # 2. 備援：透過 yfinance 套件抓取
     for ticker_symbol in ["TX=F", "^TWII"]:
         try:
             tk = yf.Ticker(ticker_symbol)
@@ -206,7 +231,6 @@ def fetch_wtx_night():
 
     return None
 
-# 全球行情抓取
 def fetch_global_markets():
     results = {}
     
