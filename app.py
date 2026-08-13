@@ -1,5 +1,7 @@
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+import json
+import re
 
 # 設定每 10 秒自動刷新數據
 st_autorefresh(interval=10000, key="data_autorefresh")
@@ -87,7 +89,7 @@ def load_all_tw_stocks():
     except:
         pass
 
-    # 高頻熱門備用補強庫
+    # 高頻熱門備用庫
     backup_map = {
         "台泥": "1101.TW", "亞泥": "1102.TW", "統一": "1216.TW", "台塑": "1301.TW", "南亞": "1303.TW",
         "台化": "1326.TW", "中鋼": "2002.TW", "台積電": "2330.TW", "聯電": "2303.TW", "鴻海": "2317.TW",
@@ -103,22 +105,18 @@ def load_all_tw_stocks():
 
 TW_STOCKS_DB = load_all_tw_stocks()
 
-# 🎯 智能解析所有輸入（中文、模糊名稱、純數字代碼）
 def resolve_input_to_symbol(user_input):
     query = user_input.strip()
     if not query:
         return "1101.TW"
         
-    # 精準匹配（包含簡稱或代碼）
     if query in TW_STOCKS_DB:
         return TW_STOCKS_DB[query]
 
-    # 模糊比對（如輸入「台泥」匹配「臺灣水泥」）
     for name, sym in TW_STOCKS_DB.items():
         if query in name or name in query:
             return sym
 
-    # 輸入純數字預設為 TW
     if query.isdigit():
         return f"{query}.TW"
 
@@ -126,7 +124,6 @@ def resolve_input_to_symbol(user_input):
 
 @st.cache_data(ttl=3600)
 def fetch_tw_chinese_name(code_num):
-    # 反向尋找官方中文名稱
     for name, sym in TW_STOCKS_DB.items():
         if sym.startswith(code_num) and not name.isdigit():
             return name
@@ -210,51 +207,52 @@ def fetch_all_news():
         ]
     return news_items
 
-# 🎯 台指期夜盤行情抓取
+# 🎯 專用台指期夜盤 (WTX&) 精準解析器
 def fetch_wtx_night():
-    for ticker_symbol in ["TX=F", "WTX=F"]:
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_symbol}?interval=1m&range=1d"
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            res = requests.get(url, headers=headers, timeout=3)
-            if res.status_code == 200:
-                meta = res.json()["chart"]["result"][0]["meta"]
-                curr = float(meta.get("regularMarketPrice", 0))
-                prev = float(meta.get("chartPreviousClose", meta.get("previousClose", curr)))
-                if curr > 0:
-                    chg = curr - prev
-                    pct = (chg / prev) * 100 if prev else 0.0
-                    return {"price": curr, "change": chg, "pct": pct}
-        except:
-            pass
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
+    # 線路 1: 專攻 Yahoo 股市台指期全/夜盤 (WTX&)
+    try:
+        url = "https://tw.stock.yahoo.com/quote/WTX%26"
+        res = requests.get(url, headers=headers, timeout=4)
+        if res.status_code == 200:
+            match = re.search(r'window\.___INITIAL_STATE___\s*=\s*({.*?});</script>', res.text)
+            if match:
+                data = json.loads(match.group(1))
+                stores = data.get('App', {}).get('context', {}).get('dispatcher', {}).get('stores', {})
+                quote_store = stores.get('StockResultStore', {}).get('quotes', {})
+                for key, q in quote_store.items():
+                    price = float(q.get('price', 0) or 0)
+                    # 嚴格點位檢驗：必須在 10000 ~ 38000 點之間（排除美股道瓊45000點干擾）
+                    if 10000 < price < 38000:
+                        change = float(q.get('change', 0) or 0)
+                        pct = float(q.get('changePercent', 0) or 0)
+                        return {"price": price, "change": change, "pct": pct}
+    except:
+        pass
 
-    for ticker_symbol in ["TX=F", "^TWII"]:
-        try:
-            tk = yf.Ticker(ticker_symbol)
-            df = tk.history(period="2d", interval="1m")
-            if df.empty:
-                df = tk.history(period="2d")
-            if len(df) >= 1:
-                curr = float(df['Close'].iloc[-1])
-                prev = float(df['Close'].iloc[-2]) if len(df) > 1 else curr
-                chg = curr - prev
-                pct = (chg / prev) * 100 if prev else 0.0
-                if curr > 0:
-                    return {"price": curr, "change": chg, "pct": pct}
-        except:
-            pass
+    # 線路 2: 備援台股加權指數 (^TWII)
+    try:
+        tk = yf.Ticker("^TWII")
+        df = tk.history(period="2d")
+        if len(df) >= 1:
+            curr = float(df['Close'].iloc[-1])
+            prev = float(df['Close'].iloc[-2]) if len(df) > 1 else curr
+            chg = curr - prev
+            pct = (chg / prev) * 100 if prev else 0.0
+            if 10000 < curr < 38000:
+                return {"price": curr, "change": chg, "pct": pct}
+    except:
+        pass
 
-    return None
+    return {"price": 0.0, "change": 0.0, "pct": 0.0}
 
 def fetch_global_markets():
     results = {}
     
     # 台指期夜盤
     wtx_data = fetch_wtx_night()
-    if wtx_data and wtx_data["price"] > 0:
-        results["台指期夜盤"] = wtx_data
-    else:
-        results["台指期夜盤"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
+    results["台指期夜盤"] = wtx_data
 
     # 台積電 ADR
     try:
