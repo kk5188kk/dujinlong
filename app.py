@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-# 設定每 10 秒（10000 毫秒）自動抓取與刷新一次最新數據
+# 設定每 10 秒自動刷新數據
 st_autorefresh(interval=10000, key="data_autorefresh")
 
 import yfinance as yf
@@ -203,9 +203,8 @@ def fetch_all_news():
         ]
     return news_items
 
-# 專用：從 Yahoo 股市/API 抓取台指期數據
+# 從 Yahoo 股市/API 專用解析台指期
 def fetch_wtx_yahoo():
-    # 方案 A: Yahoo Finance API
     try:
         url = "https://query1.finance.yahoo.com/v8/finance/chart/WTX=F"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -221,7 +220,6 @@ def fetch_wtx_yahoo():
     except:
         pass
 
-    # 方案 B: 解析 Yahoo 股市網頁頁面 (WTX&)
     try:
         url = "https://tw.stock.yahoo.com/quote/WTX%26"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -241,9 +239,9 @@ def fetch_wtx_yahoo():
 
     return None
 
-# 爬取台指期夜盤 (雙備援機制：鉅亨網 + Yahoo 股市)
+# 爬取台指期夜盤 (雙備援機制)
 def fetch_wtx_night():
-    # 1. 第一優先：鉅亨網 API
+    # 1. 鉅亨網 API
     try:
         url = "https://ws.cnyes.com/ws/api/v1/quote/quotes/FUTURE:WTX%26:FUTURE"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -259,35 +257,40 @@ def fetch_wtx_night():
     except:
         pass
 
-    # 2. 第二優先：Yahoo 股市 API / 網頁爬蟲
+    # 2. Yahoo 股市 API / 網頁爬蟲
     yahoo_data = fetch_wtx_yahoo()
     if yahoo_data and yahoo_data["price"] > 0:
         return yahoo_data
 
     return None
 
-# 5. 全球行情抓取
+# 全球行情抓取（保持 5 個窗口全部獨立）
 def fetch_global_markets():
-    markets = {"費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
     results = {}
     
-    # 1. 抓取台指期夜盤 (鉅亨 + Yahoo 雙過濾)
+    # 1. 台指期夜盤窗口
     wtx_data = fetch_wtx_night()
     if wtx_data and wtx_data["price"] > 0:
         results["台指期夜盤"] = wtx_data
     else:
-        # 最終備援：台積電 ADR
-        try:
-            tsm_df = yf.Ticker("TSM").history(period="2d")
+        results["台指期夜盤"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
+
+    # 2. 台積電 ADR 窗口
+    try:
+        tsm_df = yf.Ticker("TSM").history(period="2d")
+        if len(tsm_df) >= 1:
             curr = tsm_df['Close'].iloc[-1]
             prev = tsm_df['Close'].iloc[-2] if len(tsm_df) > 1 else curr
             chg = curr - prev
             pct = (chg / prev) * 100
             results["台積電ADR"] = {"price": curr, "change": chg, "pct": pct}
-        except:
-            results["台指期夜盤"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
+        else:
+            results["台積電ADR"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
+    except:
+        results["台積電ADR"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
 
-    # 2. 抓取美股三大指數
+    # 3. 美股三大指數窗口
+    markets = {"費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
     for name, sym in markets.items():
         try:
             df = yf.Ticker(sym).history(period="2d")
@@ -297,8 +300,11 @@ def fetch_global_markets():
                 chg = curr - prev
                 pct = (chg / prev) * 100
                 results[name] = {"price": curr, "change": chg, "pct": pct}
+            else:
+                results[name] = {"price": 0.0, "change": 0.0, "pct": 0.0}
         except:
             results[name] = {"price": 0.0, "change": 0.0, "pct": 0.0}
+            
     return results
 
 stock_df, valid_symbol, display_title = fetch_smart_stock(raw_input, timeframe)
@@ -339,10 +345,10 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
-    # ==================== 美股與台指夜盤即時行情 (台股紅漲綠跌卡片) ====================
+    # ==================== 美股與台指夜盤即時行情 (獨立 5 欄窗口) ====================
     st.subheader("🌐 美股與台指夜盤即時動態")
-    g1, g2, g3, g4 = st.columns(4)
-    cols = [g1, g2, g3, g4]
+    g1, g2, g3, g4, g5 = st.columns(5)
+    cols = [g1, g2, g3, g4, g5]
     idx = 0
     for mkt_name, data in global_mkt.items():
         if data['price'] > 0:
@@ -362,15 +368,15 @@ if stock_df is not None and not stock_df.empty:
                 
             chg_str = f"{sign}{chg:.2f} ({pct:+.2f}%)"
         else:
-            price_str = "連線中"
-            chg_str = "即時報價"
+            price_str = "盤後/休市"
+            chg_str = "即時連線中"
             color = "#8b949e"
 
         cols[idx].markdown(f"""
-        <div style="background-color: #12161f; border: 1px solid #2a313d; border-radius: 8px; padding: 14px; text-align: center;">
+        <div style="background-color: #12161f; border: 1px solid #2a313d; border-radius: 8px; padding: 12px 8px; text-align: center;">
             <div style="color: #8b949e; font-size: 13px; font-weight: bold; margin-bottom: 6px;">{mkt_name}</div>
-            <div style="color: #ffffff; font-size: 24px; font-weight: 800;">{price_str}</div>
-            <div style="color: {color}; font-size: 15px; font-weight: bold; margin-top: 6px;">{chg_str}</div>
+            <div style="color: #ffffff; font-size: 22px; font-weight: 800;">{price_str}</div>
+            <div style="color: {color}; font-size: 14px; font-weight: bold; margin-top: 6px;">{chg_str}</div>
         </div>
         """, unsafe_allow_html=True)
         idx += 1
