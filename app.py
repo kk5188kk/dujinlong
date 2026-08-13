@@ -9,6 +9,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 from bs4 import BeautifulSoup
+import re
+import json
 
 # 1. 頁面配置與高對比 CSS 樣式修正
 st.set_page_config(page_title="三竹專業版 - 台股與美股夜盤 AI 戰報", layout="wide", page_icon="📈")
@@ -65,7 +67,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 2. 側邊欄控制器（已更新提示語）
+# 2. 側邊欄控制器
 st.sidebar.header("🔍 股票與全球行情")
 raw_input = st.sidebar.text_input("輸入股票代碼或中文名稱 (例: 台積電, 3354, NVDA)", value="3354")
 timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
@@ -78,7 +80,6 @@ COMMON_NAMES = {
     "3026.TW": "禾伸堂", "3715.TW": "定穎投控", "3354.TWO": "律勝", "3354.TW": "律勝"
 }
 
-# 中文轉代碼反向對照表
 NAME_TO_SYMBOL = {
     "台積電": "2330.TW", "鴻海": "2317.TW", "聯發科": "2454.TW",
     "至上": "8112.TWO", "廣達": "2382.TW", "緯創": "3231.TW",
@@ -87,17 +88,14 @@ NAME_TO_SYMBOL = {
 }
 
 def resolve_input_to_symbol(user_input):
-    """將使用者輸入（中文或數字）解析為股票代碼"""
     query = user_input.strip()
     if not query:
         return "3354.TWO"
     
-    # 1. 先查常用中文名稱對照表
     for name, sym in NAME_TO_SYMBOL.items():
         if query == name or query in name:
             return sym
             
-    # 2. 若包含中文字，調用 Yahoo API 線上解析中文代碼
     if any('\u4e00' <= char <= '\u9fff' for char in query):
         try:
             url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=3"
@@ -118,7 +116,6 @@ def resolve_input_to_symbol(user_input):
 
 @st.cache_data(ttl=3600)
 def fetch_tw_chinese_name(code_num):
-    """即時連線抓取台灣原生中文股票名稱"""
     try:
         url = f"https://tw.stock.yahoo.com/quote/{code_num}"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -134,7 +131,6 @@ def fetch_tw_chinese_name(code_num):
     return ""
 
 def fetch_smart_stock(user_symbol, tf):
-    # 解析中文或數字代碼
     code = resolve_input_to_symbol(user_symbol).upper()
         
     candidates = []
@@ -169,7 +165,7 @@ def fetch_smart_stock(user_symbol, tf):
             continue
     return None, code, code
 
-# 4. 三大新聞源數據抓取
+# 4. 新聞抓取
 @st.cache_data(ttl=300)
 def fetch_all_news():
     news_items = []
@@ -207,8 +203,47 @@ def fetch_all_news():
         ]
     return news_items
 
-# 爬取台指期夜盤的專用邏輯 (對接鉅亨網 Anue API)
+# 專用：從 Yahoo 股市/API 抓取台指期數據
+def fetch_wtx_yahoo():
+    # 方案 A: Yahoo Finance API
+    try:
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/WTX=F"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=3)
+        data = res.json()
+        meta = data['chart']['result'][0]['meta']
+        price = float(meta.get('regularMarketPrice', 0))
+        prev = float(meta.get('chartPreviousClose', price))
+        if price > 0:
+            chg = price - prev
+            pct = (chg / prev) * 100 if prev else 0.0
+            return {"price": price, "change": chg, "pct": pct}
+    except:
+        pass
+
+    # 方案 B: 解析 Yahoo 股市網頁頁面 (WTX&)
+    try:
+        url = "https://tw.stock.yahoo.com/quote/WTX%26"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        res = requests.get(url, headers=headers, timeout=3)
+        match = re.search(r'root\.App\.main\s*=\s*({.*?});</script>', res.text)
+        if match:
+            raw_json = json.loads(match.group(1))
+            stores = raw_json.get('context', {}).get('dispatcher', {}).get('stores', {})
+            price_store = stores.get('QuoteSummaryStore', {}).get('price', {})
+            price = float(price_store.get('regularMarketPrice', {}).get('raw', 0))
+            chg = float(price_store.get('regularMarketChange', {}).get('raw', 0))
+            pct = float(price_store.get('regularMarketChangePercent', {}).get('raw', 0)) * 100
+            if price > 0:
+                return {"price": price, "change": chg, "pct": pct}
+    except:
+        pass
+
+    return None
+
+# 爬取台指期夜盤 (雙備援機制：鉅亨網 + Yahoo 股市)
 def fetch_wtx_night():
+    # 1. 第一優先：鉅亨網 API
     try:
         url = "https://ws.cnyes.com/ws/api/v1/quote/quotes/FUTURE:WTX%26:FUTURE"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -219,22 +254,29 @@ def fetch_wtx_night():
             price = float(item.get("price", 0))
             change = float(item.get("change", 0))
             pct = float(item.get("changePercent", 0))
-            return {"price": price, "change": change, "pct": pct}
+            if price > 0:
+                return {"price": price, "change": change, "pct": pct}
     except:
         pass
+
+    # 2. 第二優先：Yahoo 股市 API / 網頁爬蟲
+    yahoo_data = fetch_wtx_yahoo()
+    if yahoo_data and yahoo_data["price"] > 0:
+        return yahoo_data
+
     return None
 
-# 5. 美股與台指夜盤數據抓取
+# 5. 全球行情抓取
 def fetch_global_markets():
     markets = {"費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
     results = {}
     
-    # 1. 抓取台指期夜盤 (鉅亨網 API)
+    # 1. 抓取台指期夜盤 (鉅亨 + Yahoo 雙過濾)
     wtx_data = fetch_wtx_night()
     if wtx_data and wtx_data["price"] > 0:
         results["台指期夜盤"] = wtx_data
     else:
-        # 備援：抓取台積電 ADR (TSM)
+        # 最終備援：台積電 ADR
         try:
             tsm_df = yf.Ticker("TSM").history(period="2d")
             curr = tsm_df['Close'].iloc[-1]
@@ -308,7 +350,6 @@ if stock_df is not None and not stock_df.empty:
             chg = data['change']
             pct = data['pct']
             
-            # 台股習慣：上漲顯示紅色，下跌顯示綠色
             if chg > 0:
                 color = "#ff334b"  # 鮮紅色 (漲)
                 sign = "▲ +"
@@ -325,7 +366,6 @@ if stock_df is not None and not stock_df.empty:
             chg_str = "即時報價"
             color = "#8b949e"
 
-        # 渲染高對比視覺卡片
         cols[idx].markdown(f"""
         <div style="background-color: #12161f; border: 1px solid #2a313d; border-radius: 8px; padding: 14px; text-align: center;">
             <div style="color: #8b949e; font-size: 13px; font-weight: bold; margin-bottom: 6px;">{mkt_name}</div>
@@ -415,7 +455,7 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
-    # ==================== 底部：個股 K 線 + 總體 AI 多空推演 ====================
+    # ==================== 底部：AI 多空推演 ====================
     st.subheader("🤖 AI 實時綜合多空推演報告 (結合個股 K 線趨勢)")
 
     tech_score = 25
