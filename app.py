@@ -1,8 +1,9 @@
+import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-# 每 10 秒自動抓取與刷新一次最新數據
+# 設定每 10 秒（10000 毫秒）自動抓取與刷新一次最新數據
 st_autorefresh(interval=10000, key="data_autorefresh")
-import streamlit as st
+
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -88,7 +89,6 @@ def fetch_tw_chinese_name(code_num):
         title_text = soup.find('title').text if soup.find('title') else ""
         if title_text and '(' in title_text:
             name = title_text.split('(')[0].strip()
-            # 排除非股票標題
             if name and "Yahoo" not in name and "股市" not in name:
                 return name
     except:
@@ -114,15 +114,11 @@ def fetch_smart_stock(user_symbol, tf):
             tk = yf.Ticker(sym)
             df = tk.history(period=tf)
             if not df.empty:
-                # 優先 1: 內置常用名單
                 stock_name = COMMON_NAMES.get(sym, "")
-                
-                # 優先 2: 抓取 Yahoo 奇摩股市台股中文名 (解決英文顯示問題)
                 clean_num = sym.split('.')[0].replace('^', '')
                 if not stock_name and clean_num.isdigit():
                     stock_name = fetch_tw_chinese_name(clean_num)
                 
-                # 優先 3: yfinance 原生英文名
                 if not stock_name:
                     try:
                         info = tk.info
@@ -174,10 +170,45 @@ def fetch_all_news():
         ]
     return news_items
 
-# 5. 美股與台指夜盤數據抓取
+# 爬取台指期夜盤的專用邏輯 (Yahoo 股市爬蟲)
+def fetch_wtx_night():
+    try:
+        url = "https://tw.stock.yahoo.com/quote/WTX%26"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        res = requests.get(url, headers=headers, timeout=4)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # 尋找價格與漲跌幅
+        price_span = soup.find('span', class_=['Fz(32px)', 'Fz(36px)', 'Fz(28px)'])
+        if price_span:
+            price = float(price_span.text.replace(',', ''))
+            return price
+    except:
+        pass
+    return None
+
+# 5. 美股與台指夜盤數據抓取（增強版）
 def fetch_global_markets():
-    markets = {"台指期夜盤": "WTX=F", "費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
+    markets = {"費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
     results = {}
+    
+    # 1. 抓取台指期夜盤
+    wtx_price = fetch_wtx_night()
+    if wtx_price:
+        results["台指期夜盤"] = {"price": wtx_price, "change": 0.0, "pct": 0.0}
+    else:
+        # 如果爬不到台指期夜盤，改抓台積電 ADR (TSM) 做為夜盤指標
+        try:
+            tsm_df = yf.Ticker("TSM").history(period="2d")
+            curr = tsm_df['Close'].iloc[-1]
+            prev = tsm_df['Close'].iloc[-2] if len(tsm_df) > 1 else curr
+            chg = curr - prev
+            pct = (chg / prev) * 100
+            results["台積電ADR"] = {"price": curr, "change": chg, "pct": pct}
+        except:
+            results["台指期夜盤"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
+
+    # 2. 抓取美股三大指數
     for name, sym in markets.items():
         try:
             df = yf.Ticker(sym).history(period="2d")
@@ -236,7 +267,7 @@ if stock_df is not None and not stock_df.empty:
     idx = 0
     for mkt_name, data in global_mkt.items():
         val_str = f"{data['price']:.2f}" if data['price'] > 0 else "連線中"
-        chg_str = f"{data['change']:+.2f} ({data['pct']:+.2f}%)"
+        chg_str = f"{data['change']:+.2f} ({data['pct']:+.2f}%)" if data['change'] != 0 else "即時報價"
         cols[idx].metric(mkt_name, val_str, chg_str)
         idx += 1
 
