@@ -65,13 +65,31 @@ st.sidebar.header("🔍 股票與全球行情")
 raw_input = st.sidebar.text_input("輸入股票代碼 (例: 3354, 3715, NVDA)", value="3354")
 timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
 
-# 3. 常用中文名稱對照表與自動股票名稱解析
+# 3. 常用中文對照 + Yahoo 奇摩股市台股中文名稱自動解析器
 COMMON_NAMES = {
     "2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科", 
     "8112.TWO": "至上", "8112.TW": "至上", "2382.TW": "廣達", 
     "3231.TW": "緯創", "0050.TW": "元大台灣50", "^TWII": "加權指數", 
-    "3026.TW": "禾伸堂", "3715.TW": "定穎投控", "3354.TW": "律勝", "3354.TWO": "律勝"
+    "3026.TW": "禾伸堂", "3715.TW": "定穎投控", "3354.TWO": "律勝", "3354.TW": "律勝"
 }
+
+@st.cache_data(ttl=3600)
+def fetch_tw_chinese_name(code_num):
+    """即時連線抓取台灣原生中文股票名稱"""
+    try:
+        url = f"https://tw.stock.yahoo.com/quote/{code_num}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        res = requests.get(url, headers=headers, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        title_text = soup.find('title').text if soup.find('title') else ""
+        if title_text and '(' in title_text:
+            name = title_text.split('(')[0].strip()
+            # 排除非股票標題
+            if name and "Yahoo" not in name and "股市" not in name:
+                return name
+    except:
+        pass
+    return ""
 
 def fetch_smart_stock(user_symbol, tf):
     code = user_symbol.strip().upper()
@@ -84,15 +102,23 @@ def fetch_smart_stock(user_symbol, tf):
         candidates.append(f"{code}.TW")
         candidates.append(f"{code}.TWO")
     else:
-        candidates.append(f"{code}.TW")
         candidates.append(f"{code}.TWO")
+        candidates.append(f"{code}.TW")
 
     for sym in candidates:
         try:
             tk = yf.Ticker(sym)
             df = tk.history(period=tf)
             if not df.empty:
+                # 優先 1: 內置常用名單
                 stock_name = COMMON_NAMES.get(sym, "")
+                
+                # 優先 2: 抓取 Yahoo 奇摩股市台股中文名 (解決英文顯示問題)
+                clean_num = sym.split('.')[0].replace('^', '')
+                if not stock_name and clean_num.isdigit():
+                    stock_name = fetch_tw_chinese_name(clean_num)
+                
+                # 優先 3: yfinance 原生英文名
                 if not stock_name:
                     try:
                         info = tk.info
@@ -290,17 +316,15 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
-    # ==================== 底部：個股 K 線 + 總體 AI 多空推演 (深度修正) ====================
+    # ==================== 底部：個股 K 線 + 總體 AI 多空推演 ====================
     st.subheader("🤖 AI 實時綜合多空推演報告 (結合個股 K 線趨勢)")
 
-    # 1. 個股技術面動態評分 (滿分 50 分)
-    tech_score = 25  # 基礎中性分
+    tech_score = 25
     s_close = stock_df['Close'].iloc[-1]
     s_sma5 = stock_df['SMA5'].dropna().iloc[-1] if not stock_df['SMA5'].dropna().empty else s_close
     s_sma20 = stock_df['SMA20'].dropna().iloc[-1] if not stock_df['SMA20'].dropna().empty else s_close
     s_sma60 = stock_df['SMA60'].dropna().iloc[-1] if not stock_df['SMA60'].dropna().empty else s_close
 
-    # 價格位置加減分
     if s_close >= s_sma5: tech_score += 8
     else: tech_score -= 8
 
@@ -310,7 +334,6 @@ if stock_df is not None and not stock_df.empty:
     if s_close >= s_sma60: tech_score += 7
     else: tech_score -= 7
 
-    # 近5日走勢動能評分
     if len(stock_df) >= 5:
         p_5d_ago = stock_df['Close'].iloc[-5]
         ret_5d = ((s_close - p_5d_ago) / p_5d_ago) * 100
@@ -318,7 +341,6 @@ if stock_df is not None and not stock_df.empty:
 
     tech_score = min(max(tech_score, 0), 50)
 
-    # 2. 總體新聞與大盤評分 (滿分 50 分)
     sox_pct = global_mkt.get("費城半導體", {}).get("pct", 0.0)
     wtx_pct = global_mkt.get("台指期夜盤", {}).get("pct", 0.0)
     
@@ -328,18 +350,16 @@ if stock_df is not None and not stock_df.empty:
     macro_score += min(max((sox_pct + wtx_pct) * 5, -10), 10)
     macro_score = min(max(macro_score, 0), 50)
 
-    # 總得分 (0 - 100)
     total_score = int(tech_score + macro_score)
 
-    # 依分數切換文字與顏色 (台股紅漲綠跌)
     if total_score >= 50:
         score_text = f"{total_score}% 看多"
-        score_color = "#ff334b"  # 紅色
+        score_color = "#ff334b"
         trend_status = "偏多格局"
         logic_desc = "均線具備支撐或反彈動能，可隨大盤偏多佈局。"
     else:
         score_text = f"{100 - total_score}% 看空"
-        score_color = "#00e676"  # 綠色
+        score_color = "#00e676"
         trend_status = "空頭排列 / 偏空震盪"
         logic_desc = "價格落於短期與中期均線之下，趨勢偏弱，注意下行風險。"
 
