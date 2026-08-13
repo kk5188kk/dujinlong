@@ -260,15 +260,42 @@ if stock_df is not None and not stock_df.empty:
 
     st.markdown("---")
 
-    # ==================== 美股與台指夜盤即時行情 ====================
+    # ==================== 美股與台指夜盤即時行情 (改為台股紅漲綠跌卡片) ====================
     st.subheader("🌐 美股與台指夜盤即時動態")
     g1, g2, g3, g4 = st.columns(4)
     cols = [g1, g2, g3, g4]
     idx = 0
     for mkt_name, data in global_mkt.items():
-        val_str = f"{data['price']:.2f}" if data['price'] > 0 else "連線中"
-        chg_str = f"{data['change']:+.2f} ({data['pct']:+.2f}%)" if data['price'] > 0 else "即時報價"
-        cols[idx].metric(mkt_name, val_str, chg_str)
+        if data['price'] > 0:
+            price_str = f"{data['price']:.2f}"
+            chg = data['change']
+            pct = data['pct']
+            
+            # 台股習慣：上漲顯示紅色，下跌顯示綠色
+            if chg > 0:
+                color = "#ff334b"  # 鮮紅色 (漲)
+                sign = "▲ +"
+            elif chg < 0:
+                color = "#00e676"  # 鮮綠色 (跌)
+                sign = "▼ "
+            else:
+                color = "#ffffff"  # 平盤白色
+                sign = ""
+                
+            chg_str = f"{sign}{chg:.2f} ({pct:+.2f}%)"
+        else:
+            price_str = "連線中"
+            chg_str = "即時報價"
+            color = "#8b949e"
+
+        # 渲染高對比視覺卡片
+        cols[idx].markdown(f"""
+        <div style="background-color: #12161f; border: 1px solid #2a313d; border-radius: 8px; padding: 14px; text-align: center;">
+            <div style="color: #8b949e; font-size: 13px; font-weight: bold; margin-bottom: 6px;">{mkt_name}</div>
+            <div style="color: #ffffff; font-size: 24px; font-weight: 800;">{price_str}</div>
+            <div style="color: {color}; font-size: 15px; font-weight: bold; margin-top: 6px;">{chg_str}</div>
+        </div>
+        """, unsafe_allow_html=True)
         idx += 1
 
     st.markdown("---")
