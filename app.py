@@ -5,7 +5,7 @@ from plotly.subplots import make_subplots
 import requests
 from bs4 import BeautifulSoup
 
-# 1. 頁面配置與高對比 CSS 修正 (修復側邊欄與圖表)
+# 1. 頁面配置與精準 CSS 樣式修正 (徹底解決白底白字問題)
 st.set_page_config(page_title="三竹專業版 - 台股與美股夜盤 AI 戰報", layout="wide", page_icon="📈")
 
 st.markdown("""
@@ -13,20 +13,31 @@ st.markdown("""
     /* 全局深色背景 */
     .stApp { background-color: #0a0c10; color: #ffffff !important; }
     
-    /* 側邊欄專屬樣式修復 (徹底解決白字看不到問題) */
+    /* 側邊欄專屬背景 */
     [data-testid="stSidebar"] {
         background-color: #12161f !important;
     }
-    [data-testid="stSidebar"] * {
+    
+    /* 側邊欄標題與文字 */
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, 
+    [data-testid="stSidebar"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] span {
         color: #ffffff !important;
     }
-    [data-testid="stSidebar"] div[data-baseweb="select"] > div {
-        background-color: #1a202c !important;
+
+    /* 修正輸入框與下拉選單背景與文字顏色 (解決白底白字問題) */
+    div[data-baseweb="select"] > div, div[data-baseweb="input"] > div, input {
+        background-color: #1e2638 !important;
         color: #ffffff !important;
-        border: 1px solid #30363d !important;
+        border-color: #3b475d !important;
+    }
+
+    /* 下拉選項文字與背景 */
+    div[data-baseweb="popover"] *, div[role="listbox"] * {
+        background-color: #1e2638 !important;
+        color: #ffffff !important;
     }
     
-    /* 文字與連結清晰度 */
+    /* 主體文字與連結 */
     h1, h2, h3, h4, h5, h6, p, span, label { color: #ffffff !important; }
     a { color: #4fc3f7 !important; font-weight: bold; text-decoration: underline; }
     
@@ -58,20 +69,43 @@ st.markdown("""
 # 2. 側邊欄控制器
 st.sidebar.header("🔍 股票與全球行情")
 quick_stock = st.sidebar.selectbox(
-    "選擇標的", 
-    ["2330.TW (台積電)", "2317.TW (鴻海)", "2454.TW (聯發科)", "2382.TW (廣達)", "3231.TW (緯創)", "0050.TW (元大台灣50)", "^TWII (加權指數)", "自訂搜尋"]
+    "選擇快速選股或自訂", 
+    ["2330.TW (台積電)", "2317.TW (鴻海)", "2454.TW (聯發科)", "8112.TWO (至上)", "2382.TW (廣達)", "3231.TW (緯創)", "0050.TW (元大台灣50)", "^TWII (加權指數)", "自訂搜尋"]
 )
 
 if quick_stock == "自訂搜尋":
-    user_input = st.sidebar.text_input("輸入股票代碼 (例如: 2330)", value="2330")
-    clean_code = user_input.strip().upper()
-    symbol = clean_code if clean_code.endswith(".TW") or clean_code.startswith("^") else f"{clean_code}.TW"
+    raw_input = st.sidebar.text_input("輸入股票代碼 (例如: 2330, 8112, NVDA)", value="8112")
 else:
-    symbol = quick_stock.split(" ")[0]
+    raw_input = quick_stock.split(" ")[0]
 
 timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
 
-# 3. 三大新聞源數據抓取 (CTEE, 鉅亨網, Yahoo股市)
+# 3. 智慧股票數據獲取 (自動判斷 上市 .TW / 上櫃 .TWO / 美股)
+def fetch_smart_stock(user_symbol, tf):
+    code = user_symbol.strip().upper()
+    if not code:
+        code = "2330.TW"
+        
+    candidates = []
+    if "." in code or "^" in code or not code.isdigit():
+        candidates.append(code)
+        candidates.append(f"{code}.TW")
+        candidates.append(f"{code}.TWO")
+    else:
+        # 數字代碼：優先測試上市 (.TW) 再測試上櫃 (.TWO)
+        candidates.append(f"{code}.TW")
+        candidates.append(f"{code}.TWO")
+
+    for sym in candidates:
+        try:
+            df = yf.Ticker(sym).history(period=tf)
+            if not df.empty:
+                return df, sym
+        except:
+            continue
+    return None, code
+
+# 4. 三大新聞源數據抓取 (CTEE, 鉅亨網, Yahoo股市)
 @st.cache_data(ttl=300)
 def fetch_all_news():
     news_items = []
@@ -85,7 +119,7 @@ def fetch_all_news():
             news_items.append({"title": f"[鉅亨網] {a.text.strip()}", "url": "https://news.cnyes.com" + a.get('href', '')})
     except: pass
 
-    # 工商時報
+    # 工商時報 (CTEE)
     try:
         res = requests.get("https://www.ctee.com.tw/news/cat/stocks", headers=headers, timeout=4)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -112,7 +146,7 @@ def fetch_all_news():
         ]
     return news_items
 
-# 4. 美股與台指夜盤數據抓取
+# 5. 美股與台指夜盤數據抓取
 def fetch_global_markets():
     markets = {"台指期夜盤": "WTX=F", "費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
     results = {}
@@ -129,7 +163,7 @@ def fetch_global_markets():
             results[name] = {"price": 0.0, "change": 0.0, "pct": 0.0}
     return results
 
-stock_df = yf.Ticker(symbol).history(period=timeframe)
+stock_df, valid_symbol = fetch_smart_stock(raw_input, timeframe)
 global_mkt = fetch_global_markets()
 news_list = fetch_all_news()
 
@@ -147,7 +181,7 @@ if stock_df is not None and not stock_df.empty:
     <div class="quote-card">
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
-                <span style="font-size: 26px; font-weight: 800;">{symbol}</span>
+                <span style="font-size: 26px; font-weight: 800;">{valid_symbol}</span>
                 <span style="color: #00e676; margin-left: 10px; font-size:14px; font-weight: bold;">● 實時盤口</span>
             </div>
             <div>
@@ -184,9 +218,8 @@ if stock_df is not None and not stock_df.empty:
     col_chart, col_news = st.columns([2, 1])
 
     with col_chart:
-        st.subheader("📊 專業技術分析 K 線圖 (含均線與成交量)")
+        st.subheader(f"📊 {valid_symbol} 技術分析 K 線圖 (純黑底+雙圖層)")
         
-        # 計算主圖均線 (SMA) 與成交量均線 (Volume MA)
         stock_df['SMA5'] = stock_df['Close'].rolling(5).mean()
         stock_df['SMA10'] = stock_df['Close'].rolling(10).mean()
         stock_df['SMA20'] = stock_df['Close'].rolling(20).mean()
@@ -194,11 +227,9 @@ if stock_df is not None and not stock_df.empty:
         stock_df['Vol_MA5'] = stock_df['Volume'].rolling(5).mean()
         stock_df['Vol_MA20'] = stock_df['Volume'].rolling(20).mean()
 
-        # 建立雙圖層 (上：K線與均線，下：成交量)
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                             vertical_spacing=0.03, row_heights=[0.7, 0.3])
 
-        # 1. 主圖 Candlestick (紅漲綠跌)
         fig.add_trace(go.Candlestick(
             x=stock_df.index, open=stock_df['Open'], high=stock_df['High'],
             low=stock_df['Low'], close=stock_df['Close'],
@@ -207,13 +238,11 @@ if stock_df is not None and not stock_df.empty:
             name="K線"
         ), row=1, col=1)
 
-        # 2. 均線 Trace (顏色對照圖二風格)
         fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['SMA5'], mode='lines', name='SMA(5)', line=dict(color='#ffd700', width=1)), row=1, col=1)
         fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['SMA10'], mode='lines', name='SMA(10)', line=dict(color='#00ffff', width=1)), row=1, col=1)
         fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['SMA20'], mode='lines', name='SMA(20)', line=dict(color='#ff00ff', width=1)), row=1, col=1)
         fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['SMA60'], mode='lines', name='SMA(60)', line=dict(color='#00ff00', width=1)), row=1, col=1)
 
-        # 自動標註最高與最低價
         max_p = stock_df['High'].max()
         max_date = stock_df['High'].idxmax()
         min_p = stock_df['Low'].min()
@@ -222,13 +251,11 @@ if stock_df is not None and not stock_df.empty:
         fig.add_annotation(x=max_date, y=max_p, text=f"最高: {max_p:.2f}", showarrow=True, arrowhead=1, yshift=10, font=dict(color='#ff334b', size=12), row=1, col=1)
         fig.add_annotation(x=min_date, y=min_p, text=f"最低: {min_p:.2f}", showarrow=True, arrowhead=1, yshift=-10, font=dict(color='#00e676', size=12), row=1, col=1)
 
-        # 3. 附圖：成交量柱狀圖 (紅/綠) 與 Volume MA
         vol_colors = ['#ff334b' if c >= o else '#00e676' for c, o in zip(stock_df['Close'], stock_df['Open'])]
         fig.add_trace(go.Bar(x=stock_df.index, y=stock_df['Volume'], marker_color=vol_colors, name="成交量"), row=2, col=1)
         fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['Vol_MA5'], mode='lines', name='MA(5)', line=dict(color='#ffd700', width=1)), row=2, col=1)
         fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['Vol_MA20'], mode='lines', name='MA(20)', line=dict(color='#00ffff', width=1)), row=2, col=1)
 
-        # 純黑背景配置 (同圖二)
         fig.update_layout(
             template="plotly_dark",
             paper_bgcolor="#000000",
@@ -305,4 +332,4 @@ if stock_df is not None and not stock_df.empty:
         </div>
         """, unsafe_allow_html=True)
 else:
-    st.error("暫時無法獲取股票數據，請檢查輸入代碼。")
+    st.error(f"暫時無法獲取股票數據（查詢代碼: {raw_input}），請確認代碼是否輸入正確。")
