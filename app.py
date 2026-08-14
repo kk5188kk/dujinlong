@@ -1,21 +1,26 @@
-import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 import json
 import re
+from bs4 import BeautifulSoup
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import requests
+import streamlit as st
+from streamlit_autorefresh import st_autorefresh
+import yfinance as yf
 
 # 設定每 10 秒自動刷新數據
 st_autorefresh(interval=10000, key="data_autorefresh")
 
-import yfinance as yf
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import requests
-from bs4 import BeautifulSoup
-
 # 1. 頁面配置與高對比 CSS 樣式
-st.set_page_config(page_title="三竹專業版 - 台股與美股夜盤 AI 戰報", layout="wide", page_icon="📈")
+st.set_page_config(
+    page_title="三竹專業版 - 台股與美股夜盤 AI 戰報",
+    layout="wide",
+    page_icon="📈",
+)
 
-st.markdown("""
+st.markdown(
+    """
 <style>
     .stApp { background-color: #0a0c10; color: #ffffff !important; }
     [data-testid="stSidebar"] { background-color: #12161f !important; }
@@ -50,241 +55,319 @@ st.markdown("""
     div[data-testid="stMetricLabel"] > label { color: #8b949e !important; font-size: 13px !important; }
     div[data-testid="stMetricValue"] { color: #ffffff !important; font-weight: bold !important; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # 2. 側邊欄控制器
 st.sidebar.header("🔍 股票與全球行情")
-raw_input = st.sidebar.text_input("輸入股票代碼或中文名稱 (例: 台泥, 聯電, 2330, NVDA)", value="台泥")
-timeframe = st.sidebar.radio("K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1)
+raw_input = st.sidebar.text_input(
+    "輸入股票代碼或中文名稱 (例: 台泥, 聯電, 2330, NVDA)", value="台泥"
+)
+timeframe = st.sidebar.radio(
+    "K線時間範圍", ["1mo", "3mo", "6mo", "1y"], index=1
+)
+
 
 # 🎯 載入證交所/櫃買中心官方全台股對照表 (24小時快取)
 @st.cache_data(ttl=86400)
 def load_all_tw_stocks():
-    stock_dict = {}
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    
-    # 1. 上市股票清單 (證交所 OpenData)
-    try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL", headers=headers, timeout=5)
-        if res.status_code == 200:
-            for item in res.json():
-                code = item.get("Code", "").strip()
-                name = item.get("Name", "").strip()
-                if code and name:
-                    stock_dict[name] = f"{code}.TW"
-                    stock_dict[code] = f"{code}.TW"
-    except:
-        pass
+  stock_dict = {}
+  headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-    # 2. 上櫃股票清單 (櫃買中心 OpenData)
-    try:
-        res = requests.get("https://www.tpex.org.tw/openapi/v1/mopsdd_result_108", headers=headers, timeout=5)
-        if res.status_code == 200:
-            for item in res.json():
-                code = item.get("SecuritiesCompanyCode", "").strip()
-                name = item.get("CompanyName", "").strip()
-                if code and name:
-                    stock_dict[name] = f"{code}.TWO"
-                    stock_dict[code] = f"{code}.TWO"
-    except:
-        pass
+  try:
+    res = requests.get(
+        "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL",
+        headers=headers,
+        timeout=5,
+    )
+    if res.status_code == 200:
+      for item in res.json():
+        code = item.get("Code", "").strip()
+        name = item.get("Name", "").strip()
+        if code and name:
+          stock_dict[name] = f"{code}.TW"
+          stock_dict[code] = f"{code}.TW"
+  except:
+    pass
 
-    # 高頻熱門備用庫
-    backup_map = {
-        "台泥": "1101.TW", "亞泥": "1102.TW", "統一": "1216.TW", "台塑": "1301.TW", "南亞": "1303.TW",
-        "台化": "1326.TW", "中鋼": "2002.TW", "台積電": "2330.TW", "聯電": "2303.TW", "鴻海": "2317.TW",
-        "台達電": "2308.TW", "華碩": "2357.TW", "廣達": "2382.TW", "研華": "2395.TW", "聯發科": "2454.TW",
-        "長榮": "2603.TW", "陽明": "2609.TW", "萬海": "2615.TW", "富邦金": "2881.TW", "國泰金": "2882.TW",
-        "玉山金": "2884.TW", "兆豐金": "2886.TW", "中信金": "2891.TW", "大立光": "3008.TW", "緯創": "3231.TW",
-        "世芯-KY": "3661.TW", "創意": "3443.TW", "祥碩": "5269.TW", "緯穎": "6669.TW", "日月光投控": "3711.TW",
-        "加權指數": "^TWII", "元大台灣50": "0050.TW", "元大高股息": "0056.TW", "國泰永續高股息": "00878.TW",
-        "群益台灣精選高息": "00919.TW", "復華台灣科技優息": "00929.TW", "元大台灣價值高息": "00940.TW"
-    }
-    stock_dict.update(backup_map)
-    return stock_dict
+  try:
+    res = requests.get(
+        "https://www.tpex.org.tw/openapi/v1/mopsdd_result_108",
+        headers=headers,
+        timeout=5,
+    )
+    if res.status_code == 200:
+      for item in res.json():
+        code = item.get("SecuritiesCompanyCode", "").strip()
+        name = item.get("CompanyName", "").strip()
+        if code and name:
+          stock_dict[name] = f"{code}.TWO"
+          stock_dict[code] = f"{code}.TWO"
+  except:
+    pass
+
+  backup_map = {
+      "台泥": "1101.TW",
+      "亞泥": "1102.TW",
+      "統一": "1216.TW",
+      "台塑": "1301.TW",
+      "南亞": "1303.TW",
+      "台化": "1326.TW",
+      "中鋼": "2002.TW",
+      "台積電": "2330.TW",
+      "聯電": "2303.TW",
+      "鴻海": "2317.TW",
+      "台達電": "2308.TW",
+      "華碩": "2357.TW",
+      "廣達": "2382.TW",
+      "研華": "2395.TW",
+      "聯發科": "2454.TW",
+      "長榮": "2603.TW",
+      "陽明": "2609.TW",
+      "萬海": "2615.TW",
+      "富邦金": "2881.TW",
+      "國泰金": "2882.TW",
+      "玉山金": "2884.TW",
+      "兆豐金": "2886.TW",
+      "中信金": "2891.TW",
+      "大立光": "3008.TW",
+      "緯創": "3231.TW",
+      "世芯-KY": "3661.TW",
+      "創意": "3443.TW",
+      "祥碩": "5269.TW",
+      "緯穎": "6669.TW",
+      "日月光投控": "3711.TW",
+      "加權指數": "^TWII",
+      "元大台灣50": "0050.TW",
+      "元大高股息": "0056.TW",
+      "國泰永續高股息": "00878.TW",
+      "群益台灣精選高息": "00919.TW",
+      "復華台灣科技優息": "00929.TW",
+      "元大台灣價值高息": "00940.TW",
+  }
+  stock_dict.update(backup_map)
+  return stock_dict
+
 
 TW_STOCKS_DB = load_all_tw_stocks()
 
+
 def resolve_input_to_symbol(user_input):
-    query = user_input.strip()
-    if not query:
-        return "1101.TW"
-        
-    if query in TW_STOCKS_DB:
-        return TW_STOCKS_DB[query]
+  query = user_input.strip()
+  if not query:
+    return "1101.TW"
 
-    for name, sym in TW_STOCKS_DB.items():
-        if query in name or name in query:
-            return sym
+  if query in TW_STOCKS_DB:
+    return TW_STOCKS_DB[query]
 
-    if query.isdigit():
-        return f"{query}.TW"
+  for name, sym in TW_STOCKS_DB.items():
+    if query in name or name in query:
+      return sym
 
-    return query
+  if query.isdigit():
+    return f"{query}.TW"
+
+  return query
+
 
 @st.cache_data(ttl=3600)
 def fetch_tw_chinese_name(code_num):
-    for name, sym in TW_STOCKS_DB.items():
-        if sym.startswith(code_num) and not name.isdigit():
-            return name
-    try:
-        url = f"https://tw.stock.yahoo.com/quote/{code_num}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        res = requests.get(url, headers=headers, timeout=3)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        title_text = soup.find('title').text if soup.find('title') else ""
-        if title_text and '(' in title_text:
-            name = title_text.split('(')[0].strip()
-            if name and "Yahoo" not in name and "股市" not in name:
-                return name
-    except:
-        pass
-    return ""
+  for name, sym in TW_STOCKS_DB.items():
+    if sym.startswith(code_num) and not name.isdigit():
+      return name
+  try:
+    url = f"https://tw.stock.yahoo.com/quote/{code_num}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    res = requests.get(url, headers=headers, timeout=3)
+    soup = BeautifulSoup(res.text, "html.parser")
+    title_text = soup.find("title").text if soup.find("title") else ""
+    if title_text and "(" in title_text:
+      name = title_text.split("(")[0].strip()
+      if name and "Yahoo" not in name and "股市" not in name:
+        return name
+  except:
+    pass
+  return ""
+
 
 def fetch_smart_stock(user_symbol, tf):
-    code = resolve_input_to_symbol(user_symbol).upper()
-    
-    candidates = []
-    if code.endswith(".TW") or code.endswith(".TWO") or code.startswith("^"):
-        candidates.append(code)
-        if code.endswith(".TW"): candidates.append(code.replace(".TW", ".TWO"))
-        elif code.endswith(".TWO"): candidates.append(code.replace(".TWO", ".TW"))
-    elif code.isdigit():
-        candidates.append(f"{code}.TW")
-        candidates.append(f"{code}.TWO")
-    else:
-        candidates.append(code)
-        candidates.append(f"{code}.TW")
-        candidates.append(f"{code}.TWO")
+  code = resolve_input_to_symbol(user_symbol).upper()
 
-    for sym in candidates:
-        try:
-            tk = yf.Ticker(sym)
-            df = tk.history(period=tf)
-            if not df.empty:
-                clean_num = sym.split('.')[0].replace('^', '')
-                stock_name = ""
-                if clean_num.isdigit():
-                    stock_name = fetch_tw_chinese_name(clean_num)
-                
-                if not stock_name:
-                    try:
-                        info = tk.info
-                        stock_name = info.get('shortName') or info.get('longName') or ""
-                    except:
-                        stock_name = ""
-                
-                display_title = f"{stock_name} ({sym})" if stock_name else sym
-                return df, sym, display_title
-        except:
-            continue
-    return None, code, code
+  candidates = []
+  if code.endswith(".TW") or code.endswith(".TWO") or code.startswith("^"):
+    candidates.append(code)
+    if code.endswith(".TW"):
+      candidates.append(code.replace(".TW", ".TWO"))
+    elif code.endswith(".TWO"):
+      candidates.append(code.replace(".TWO", ".TW"))
+  elif code.isdigit():
+    candidates.append(f"{code}.TW")
+    candidates.append(f"{code}.TWO")
+  else:
+    candidates.append(code)
+    candidates.append(f"{code}.TW")
+    candidates.append(f"{code}.TWO")
+
+  for sym in candidates:
+    try:
+      tk = yf.Ticker(sym)
+      df = tk.history(period=tf)
+      if not df.empty:
+        clean_num = sym.split(".")[0].replace("^", "")
+        stock_name = ""
+        if clean_num.isdigit():
+          stock_name = fetch_tw_chinese_name(clean_num)
+
+        if not stock_name:
+          try:
+            info = tk.info
+            stock_name = (
+                info.get("shortName") or info.get("longName") or ""
+            )
+          except:
+            stock_name = ""
+
+        display_title = f"{stock_name} ({sym})" if stock_name else sym
+        return df, sym, display_title
+    except:
+      continue
+  return None, code, code
+
 
 # 3. 新聞抓取
 @st.cache_data(ttl=300)
 def fetch_all_news():
-    news_items = []
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        res = requests.get("https://news.cnyes.com/news/cat/headline", headers=headers, timeout=4)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for a in soup.select('a._1p-3')[:3]:
-            news_items.append({"title": f"[鉅亨網] {a.text.strip()}", "url": "https://news.cnyes.com" + a.get('href', '')})
-    except: pass
+  news_items = []
+  headers = {"User-Agent": "Mozilla/5.0"}
+  try:
+    res = requests.get(
+        "https://news.cnyes.com/news/cat/headline", headers=headers, timeout=4
+    )
+    soup = BeautifulSoup(res.text, "html.parser")
+    for a in soup.select("a._1p-3")[:3]:
+      news_items.append({
+          "title": f"[鉅亨網] {a.text.strip()}",
+          "url": "https://news.cnyes.com" + a.get("href", ""),
+      })
+  except:
+    pass
 
-    try:
-        res = requests.get("https://www.ctee.com.tw/news/cat/stocks", headers=headers, timeout=4)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for a in soup.select('a.title')[:3]:
-            news_items.append({"title": f"[CTEE] {a.text.strip()}", "url": "https://www.ctee.com.tw" + a.get('href', '')})
-    except: pass
+  try:
+    res = requests.get(
+        "https://www.ctee.com.tw/news/cat/stocks", headers=headers, timeout=4
+    )
+    soup = BeautifulSoup(res.text, "html.parser")
+    for a in soup.select("a.title")[:3]:
+      news_items.append({
+          "title": f"[CTEE] {a.text.strip()}",
+          "url": "https://www.ctee.com.tw" + a.get("href", ""),
+      })
+  except:
+    pass
 
-    if not news_items:
-        news_items = [
-            {"title": "[CTEE] 半導體先進封裝動能強勁，台股權值股有撐", "url": "https://www.ctee.com.tw/"},
-            {"title": "[鉅亨網] 美股費半指數強勢，台指夜盤震盪走亮", "url": "https://news.cnyes.com/"},
-            {"title": "[Yahoo股市] 外資聚焦 AI 核心供應鏈，盤中買超放大", "url": "https://tw.stock.yahoo.com/"}
-        ]
-    return news_items
+  if not news_items:
+    news_items = [
+        {
+            "title": "[CTEE] 半導體先進封裝動能強勁，台股權值股有撐",
+            "url": "https://www.ctee.com.tw/",
+        },
+        {
+            "title": "[鉅亨網] 美股費半指數強勢，台指夜盤震盪走亮",
+            "url": "https://news.cnyes.com/",
+        },
+        {
+            "title": (
+                "[Yahoo股市] 外資聚焦 AI 核心供應鏈，盤中買超放大"
+            ),
+            "url": "https://tw.stock.yahoo.com/",
+        },
+    ]
+  return news_items
 
-# 🎯 專用台指期夜盤 (WTX&) 精準解析器
+
 def fetch_wtx_night():
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    
-    # 線路 1: 專攻 Yahoo 股市台指期全/夜盤 (WTX&)
-    try:
-        url = "https://tw.stock.yahoo.com/quote/WTX%26"
-        res = requests.get(url, headers=headers, timeout=4)
-        if res.status_code == 200:
-            match = re.search(r'window\.___INITIAL_STATE___\s*=\s*({.*?});</script>', res.text)
-            if match:
-                data = json.loads(match.group(1))
-                stores = data.get('App', {}).get('context', {}).get('dispatcher', {}).get('stores', {})
-                quote_store = stores.get('StockResultStore', {}).get('quotes', {})
-                for key, q in quote_store.items():
-                    price = float(q.get('price', 0) or 0)
-                    # 嚴格點位檢驗：必須在 10000 ~ 38000 點之間（排除美股道瓊45000點干擾）
-                    if 10000 < price < 38000:
-                        change = float(q.get('change', 0) or 0)
-                        pct = float(q.get('changePercent', 0) or 0)
-                        return {"price": price, "change": change, "pct": pct}
-    except:
-        pass
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      )
+  }
+  try:
+    url = "https://tw.stock.yahoo.com/quote/WTX%26"
+    res = requests.get(url, headers=headers, timeout=4)
+    if res.status_code == 200:
+      match = re.search(
+          r"window\.___INITIAL_STATE___\s*=\s*({.*?});</script>", res.text
+      )
+      if match:
+        data = json.loads(match.group(1))
+        stores = (
+            data.get("App", {})
+            .get("context", {})
+            .get("dispatcher", {})
+            .get("stores", {})
+        )
+        quote_store = stores.get("StockResultStore", {}).get("quotes", {})
+        for key, q in quote_store.items():
+          price = float(q.get("price", 0) or 0)
+          if 10000 < price < 38000:
+            change = float(q.get("change", 0) or 0)
+            pct = float(q.get("changePercent", 0) or 0)
+            return {"price": price, "change": change, "pct": pct}
+  except:
+    pass
 
-    # 線路 2: 備援台股加權指數 (^TWII)
-    try:
-        tk = yf.Ticker("^TWII")
-        df = tk.history(period="2d")
-        if len(df) >= 1:
-            curr = float(df['Close'].iloc[-1])
-            prev = float(df['Close'].iloc[-2]) if len(df) > 1 else curr
-            chg = curr - prev
-            pct = (chg / prev) * 100 if prev else 0.0
-            if 10000 < curr < 38000:
-                return {"price": curr, "change": chg, "pct": pct}
-    except:
-        pass
+  try:
+    tk = yf.Ticker("^TWII")
+    df = tk.history(period="2d")
+    if len(df) >= 1:
+      curr = float(df["Close"].iloc[-1])
+      prev = float(df["Close"].iloc[-2]) if len(df) > 1 else curr
+      chg = curr - prev
+      pct = (chg / prev) * 100 if prev else 0.0
+      if 10000 < curr < 38000:
+        return {"price": curr, "change": chg, "pct": pct}
+  except:
+    pass
 
-    return {"price": 0.0, "change": 0.0, "pct": 0.0}
+  return {"price": 0.0, "change": 0.0, "pct": 0.0}
+
 
 def fetch_global_markets():
-    results = {}
-    
-    # 台指期夜盤
-    wtx_data = fetch_wtx_night()
-    results["台指期夜盤"] = wtx_data
+  results = {}
+  wtx_data = fetch_wtx_night()
+  results["台指期夜盤"] = wtx_data
 
-    # 台積電 ADR
+  try:
+    tsm_df = yf.Ticker("TSM").history(period="2d")
+    if len(tsm_df) >= 1:
+      curr = tsm_df["Close"].iloc[-1]
+      prev = tsm_df["Close"].iloc[-2] if len(tsm_df) > 1 else curr
+      chg = curr - prev
+      pct = (chg / prev) * 100
+      results["台積電ADR"] = {"price": curr, "change": chg, "pct": pct}
+    else:
+      results["台積電ADR"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
+  except:
+    results["台積電ADR"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
+
+  markets = {"費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
+  for name, sym in markets.items():
     try:
-        tsm_df = yf.Ticker("TSM").history(period="2d")
-        if len(tsm_df) >= 1:
-            curr = tsm_df['Close'].iloc[-1]
-            prev = tsm_df['Close'].iloc[-2] if len(tsm_df) > 1 else curr
-            chg = curr - prev
-            pct = (chg / prev) * 100
-            results["台積電ADR"] = {"price": curr, "change": chg, "pct": pct}
-        else:
-            results["台積電ADR"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
+      df = yf.Ticker(sym).history(period="2d")
+      if len(df) >= 1:
+        curr = df["Close"].iloc[-1]
+        prev = df["Close"].iloc[-2] if len(df) > 1 else curr
+        chg = curr - prev
+        pct = (chg / prev) * 100
+        results[name] = {"price": curr, "change": chg, "pct": pct}
+      else:
+        results[name] = {"price": 0.0, "change": 0.0, "pct": 0.0}
     except:
-        results["台積電ADR"] = {"price": 0.0, "change": 0.0, "pct": 0.0}
+      results[name] = {"price": 0.0, "change": 0.0, "pct": 0.0}
 
-    # 美股三大指數
-    markets = {"費城半導體": "^SOX", "納斯達克": "^IXIC", "道瓊指數": "^DJI"}
-    for name, sym in markets.items():
-        try:
-            df = yf.Ticker(sym).history(period="2d")
-            if len(df) >= 1:
-                curr = df['Close'].iloc[-1]
-                prev = df['Close'].iloc[-2] if len(df) > 1 else curr
-                chg = curr - prev
-                pct = (chg / prev) * 100
-                results[name] = {"price": curr, "change": chg, "pct": pct}
-            else:
-                results[name] = {"price": 0.0, "change": 0.0, "pct": 0.0}
-        except:
-            results[name] = {"price": 0.0, "change": 0.0, "pct": 0.0}
-            
-    return results
+  return results
+
 
 stock_df, valid_symbol, display_title = fetch_smart_stock(raw_input, timeframe)
 global_mkt = fetch_global_markets()
@@ -292,15 +375,18 @@ news_list = fetch_all_news()
 
 # ==================== 頂部：標的實時價格看板 ====================
 if stock_df is not None and not stock_df.empty:
-    curr_price = stock_df['Close'].iloc[-1]
-    prev_price = stock_df['Close'].iloc[-2] if len(stock_df) > 1 else curr_price
-    change = curr_price - prev_price
-    pct_change = (change / prev_price) * 100
-    
-    price_color_class = "price-up" if change >= 0 else "price-down"
-    sign = "+" if change >= 0 else ""
+  curr_price = stock_df["Close"].iloc[-1]
+  prev_price = (
+      stock_df["Close"].iloc[-2] if len(stock_df) > 1 else curr_price
+  )
+  change = curr_price - prev_price
+  pct_change = (change / prev_price) * 100
 
-    st.markdown(f"""
+  price_color_class = "price-up" if change >= 0 else "price-down"
+  sign = "+" if change >= 0 else ""
+
+  st.markdown(
+      f"""
     <div class="quote-card">
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
@@ -313,209 +399,395 @@ if stock_df is not None and not stock_df.empty:
             </div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+      unsafe_allow_html=True,
+  )
 
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("開盤價", f"{stock_df['Open'].iloc[-1]:.2f}")
-    k2.metric("最高價", f"{stock_df['High'].iloc[-1]:.2f}")
-    k3.metric("最低價", f"{stock_df['Low'].iloc[-1]:.2f}")
-    k4.metric("前日收盤", f"{prev_price:.2f}")
-    k5.metric("成交量", f"{int(stock_df['Volume'].iloc[-1]):,}")
+  k1, k2, k3, k4, k5 = st.columns(5)
+  k1.metric("開盤價", f"{stock_df['Open'].iloc[-1]:.2f}")
+  k2.metric("最高價", f"{stock_df['High'].iloc[-1]:.2f}")
+  k3.metric("最低價", f"{stock_df['Low'].iloc[-1]:.2f}")
+  k4.metric("前日收盤", f"{prev_price:.2f}")
+  k5.metric("成交量", f"{int(stock_df['Volume'].iloc[-1]):,}")
 
-    st.markdown("---")
+  st.markdown("---")
 
-    # ==================== 美股與台指夜盤即時行情 ====================
-    st.subheader("🌐 美股與台指夜盤即時動態")
-    g1, g2, g3, g4, g5 = st.columns(5)
-    cols = [g1, g2, g3, g4, g5]
-    idx = 0
-    for mkt_name, data in global_mkt.items():
-        if data['price'] > 0:
-            price_str = f"{data['price']:,.2f}"
-            chg = data['change']
-            pct = data['pct']
-            
-            if chg > 0:
-                color = "#ff334b"
-                sign = "▲ +"
-            elif chg < 0:
-                color = "#00e676"
-                sign = "▼ "
-            else:
-                color = "#ffffff"
-                sign = ""
-                
-            chg_str = f"{sign}{chg:.2f} ({pct:+.2f}%)"
-        else:
-            price_str = "更新中"
-            chg_str = "連線嘗試中"
-            color = "#8b949e"
+  # ==================== 美股與台指夜盤即時行情 ====================
+  st.subheader("🌐 美股與台指夜盤即時動態")
+  g1, g2, g3, g4, g5 = st.columns(5)
+  cols = [g1, g2, g3, g4, g5]
+  idx = 0
+  for mkt_name, data in global_mkt.items():
+    if data["price"] > 0:
+      price_str = f"{data['price']:,.2f}"
+      chg = data["change"]
+      pct = data["pct"]
 
-        cols[idx].markdown(f"""
+      if chg > 0:
+        color = "#ff334b"
+        sign = "▲ +"
+      elif chg < 0:
+        color = "#00e676"
+        sign = "▼ "
+      else:
+        color = "#ffffff"
+        sign = ""
+
+      chg_str = f"{sign}{chg:.2f} ({pct:+.2f}%)"
+    else:
+      price_str = "更新中"
+      chg_str = "連線嘗試中"
+      color = "#8b949e"
+
+    cols[idx].markdown(
+        f"""
         <div style="background-color: #12161f; border: 1px solid #2a313d; border-radius: 8px; padding: 12px 8px; text-align: center;">
             <div style="color: #8b949e; font-size: 13px; font-weight: bold; margin-bottom: 6px;">{mkt_name}</div>
             <div style="color: #ffffff; font-size: 22px; font-weight: 800;">{price_str}</div>
             <div style="color: {color}; font-size: 14px; font-weight: bold; margin-top: 6px;">{chg_str}</div>
         </div>
-        """, unsafe_allow_html=True)
-        idx += 1
+        """,
+        unsafe_allow_html=True,
+    )
+    idx += 1
 
-    st.markdown("---")
+  st.markdown("---")
 
-    # 計算均線
-    stock_df['SMA5'] = stock_df['Close'].rolling(5).mean()
-    stock_df['SMA10'] = stock_df['Close'].rolling(10).mean()
-    stock_df['SMA20'] = stock_df['Close'].rolling(20).mean()
-    stock_df['SMA60'] = stock_df['Close'].rolling(60).mean()
-    stock_df['Vol_MA5'] = stock_df['Volume'].rolling(5).mean()
-    stock_df['Vol_MA20'] = stock_df['Volume'].rolling(20).mean()
+  # 技術指標計算
+  stock_df["SMA5"] = stock_df["Close"].rolling(5).mean()
+  stock_df["SMA10"] = stock_df["Close"].rolling(10).mean()
+  stock_df["SMA20"] = stock_df["Close"].rolling(20).mean()
+  stock_df["SMA60"] = stock_df["Close"].rolling(60).mean()
+  stock_df["Vol_MA5"] = stock_df["Volume"].rolling(5).mean()
+  stock_df["Vol_MA20"] = stock_df["Volume"].rolling(20).mean()
 
-    # ==================== 中間欄：專業 K 線圖 + 新聞 ====================
-    col_chart, col_news = st.columns([2, 1])
+  # 建立 ATR 真實波動區間指標 (用於動態風控停損點計算)
+  tr = np.maximum(
+      stock_df["High"] - stock_df["Low"],
+      np.maximum(
+          abs(stock_df["High"] - stock_df["Close"].shift(1)),
+          abs(stock_df["Low"] - stock_df["Close"].shift(1)),
+      ),
+  )
+  stock_df["ATR14"] = tr.rolling(14).mean()
 
-    with col_chart:
-        st.subheader(f"📊 {display_title} 技術分析 K 線圖 (純黑底+雙圖層)")
+  # ==================== 中間欄：專業 K 線圖 + 新聞 ====================
+  col_chart, col_news = st.columns([2, 1])
 
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                            vertical_spacing=0.03, row_heights=[0.7, 0.3])
+  with col_chart:
+    st.subheader(f"📊 {display_title} 技術分析 K 線圖 (純黑底+雙圖層)")
 
-        fig.add_trace(go.Candlestick(
-            x=stock_df.index, open=stock_df['Open'], high=stock_df['High'],
-            low=stock_df['Low'], close=stock_df['Close'],
-            increasing_line_color='#ff334b', increasing_fillcolor='#ff334b',
-            decreasing_line_color='#00e676', decreasing_fillcolor='#00e676',
-            name="K線"
-        ), row=1, col=1)
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.7, 0.3],
+    )
 
-        fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['SMA5'], mode='lines', name='SMA(5)', line=dict(color='#ffd700', width=1)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['SMA10'], mode='lines', name='SMA(10)', line=dict(color='#00ffff', width=1)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['SMA20'], mode='lines', name='SMA(20)', line=dict(color='#ff00ff', width=1)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['SMA60'], mode='lines', name='SMA(60)', line=dict(color='#00ff00', width=1)), row=1, col=1)
+    fig.add_trace(
+        go.Candlestick(
+            x=stock_df.index,
+            open=stock_df["Open"],
+            high=stock_df["High"],
+            low=stock_df["Low"],
+            close=stock_df["Close"],
+            increasing_line_color="#ff334b",
+            increasing_fillcolor="#ff334b",
+            decreasing_line_color="#00e676",
+            decreasing_fillcolor="#00e676",
+            name="K線",
+        ),
+        row=1,
+        col=1,
+    )
 
-        max_p = stock_df['High'].max()
-        max_date = stock_df['High'].idxmax()
-        min_p = stock_df['Low'].min()
-        min_date = stock_df['Low'].idxmin()
+    fig.add_trace(
+        go.Scatter(
+            x=stock_df.index,
+            y=stock_df["SMA5"],
+            mode="lines",
+            name="SMA(5)",
+            line=dict(color="#ffd700", width=1),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=stock_df.index,
+            y=stock_df["SMA10"],
+            mode="lines",
+            name="SMA(10)",
+            line=dict(color="#00ffff", width=1),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=stock_df.index,
+            y=stock_df["SMA20"],
+            mode="lines",
+            name="SMA(20)",
+            line=dict(color="#ff00ff", width=1),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=stock_df.index,
+            y=stock_df["SMA60"],
+            mode="lines",
+            name="SMA(60)",
+            line=dict(color="#00ff00", width=1),
+        ),
+        row=1,
+        col=1,
+    )
 
-        fig.add_annotation(x=max_date, y=max_p, text=f"最高: {max_p:.2f}", showarrow=True, arrowhead=1, yshift=10, font=dict(color='#ff334b', size=12), row=1, col=1)
-        fig.add_annotation(x=min_date, y=min_p, text=f"最低: {min_p:.2f}", showarrow=True, arrowhead=1, yshift=-10, font=dict(color='#00e676', size=12), row=1, col=1)
+    max_p = stock_df["High"].max()
+    max_date = stock_df["High"].idxmax()
+    min_p = stock_df["Low"].min()
+    min_date = stock_df["Low"].idxmin()
 
-        vol_colors = ['#ff334b' if c >= o else '#00e676' for c, o in zip(stock_df['Close'], stock_df['Open'])]
-        fig.add_trace(go.Bar(x=stock_df.index, y=stock_df['Volume'], marker_color=vol_colors, name="成交量"), row=2, col=1)
-        fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['Vol_MA5'], mode='lines', name='MA(5)', line=dict(color='#ffd700', width=1)), row=2, col=1)
-        fig.add_trace(go.Scatter(x=stock_df.index, y=stock_df['Vol_MA20'], mode='lines', name='MA(20)', line=dict(color='#00ffff', width=1)), row=2, col=1)
+    fig.add_annotation(
+        x=max_date,
+        y=max_p,
+        text=f"最高: {max_p:.2f}",
+        showarrow=True,
+        arrowhead=1,
+        yshift=10,
+        font=dict(color="#ff334b", size=12),
+        row=1,
+        col=1,
+    )
+    fig.add_annotation(
+        x=min_date,
+        y=min_p,
+        text=f"最低: {min_p:.2f}",
+        showarrow=True,
+        arrowhead=1,
+        yshift=-10,
+        font=dict(color="#00e676", size=12),
+        row=1,
+        col=1,
+    )
 
-        fig.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="#000000",
-            plot_bgcolor="#000000",
-            height=480,
-            showlegend=False,
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis2_rangeslider_visible=False
-        )
-        fig.update_xaxes(gridcolor='#1e222d', showgrid=True)
-        fig.update_yaxes(gridcolor='#1e222d', showgrid=True)
+    vol_colors = [
+        "#ff334b" if c >= o else "#00e676"
+        for c, o in zip(stock_df["Close"], stock_df["Open"])
+    ]
+    fig.add_trace(
+        go.Bar(
+            x=stock_df.index,
+            y=stock_df["Volume"],
+            marker_color=vol_colors,
+            name="成交量",
+        ),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=stock_df.index,
+            y=stock_df["Vol_MA5"],
+            mode="lines",
+            name="MA(5)",
+            line=dict(color="#ffd700", width=1),
+        ),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=stock_df.index,
+            y=stock_df["Vol_MA20"],
+            mode="lines",
+            name="MA(20)",
+            line=dict(color="#00ffff", width=1),
+        ),
+        row=2,
+        col=1,
+    )
 
-        st.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#000000",
+        plot_bgcolor="#000000",
+        height=480,
+        showlegend=False,
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis2_rangeslider_visible=False,
+    )
+    fig.update_xaxes(gridcolor="#1e222d", showgrid=True)
+    fig.update_yaxes(gridcolor="#1e222d", showgrid=True)
 
-    with col_news:
-        st.subheader("📰 實時市場新聞")
-        bull_count = 0
-        bear_count = 0
-        for item in news_list:
-            title = item['title']
-            if any(k in title for k in ["漲", "飆", "高", "買超", "利多", "反彈", "旺", "強"]):
-                badge = "<span style='color:#ff334b; font-weight:bold;'>[🟢 利多]</span>"
-                bull_count += 1
-            elif any(k in title for k in ["跌", "重挫", "賣超", "利空", "壓力", "回檔"]):
-                badge = "<span style='color:#00e676; font-weight:bold;'>[🔴 利空]</span>"
-                bear_count += 1
-            else:
-                badge = "<span style='color:#ffd60a;'>[🟡 中立]</span>"
-                bull_count += 0.5
+    st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown(f"• {badge} <a href='{item['url']}' target='_blank'>{title}</a>", unsafe_allow_html=True)
-            st.markdown("<hr style='margin:6px 0; border-color:#2a313d;'>", unsafe_allow_html=True)
+  with col_news:
+    st.subheader("📰 實時市場新聞")
+    bull_count = 0
+    bear_count = 0
+    for item in news_list:
+      title = item["title"]
+      if any(
+          k in title for k in ["漲", "飆", "高", "買超", "利多", "反彈", "旺", "強"]
+      ):
+        badge = "<span style='color:#ff334b; font-weight:bold;'>[🟢 利多]</span>"
+        bull_count += 1
+      elif any(
+          k in title for k in ["跌", "重挫", "賣超", "利空", "壓力", "回檔"]
+      ):
+        badge = "<span style='color:#00e676; font-weight:bold;'>[🔴 利空]</span>"
+        bear_count += 1
+      else:
+        badge = "<span style='color:#ffd60a;'>[🟡 中立]</span>"
+        bull_count += 0.5
 
-    st.markdown("---")
+      st.markdown(
+          f"• {badge} <a href='{item['url']}' target='_blank'>{title}</a>",
+          unsafe_allow_html=True,
+      )
+      st.markdown(
+          "<hr style='margin:6px 0; border-color:#2a313d;'>",
+          unsafe_allow_html=True,
+      )
 
-    # ==================== 底部：AI 多空推演 ====================
-    st.subheader("🤖 AI 實時綜合多空推演報告")
+  st.markdown("---")
 
-    tech_score = 25
-    s_close = stock_df['Close'].iloc[-1]
-    s_sma5 = stock_df['SMA5'].dropna().iloc[-1] if not stock_df['SMA5'].dropna().empty else s_close
-    s_sma20 = stock_df['SMA20'].dropna().iloc[-1] if not stock_df['SMA20'].dropna().empty else s_close
-    s_sma60 = stock_df['SMA60'].dropna().iloc[-1] if not stock_df['SMA60'].dropna().empty else s_close
+  # ==================== 底部：AI 多空推演 + 強化風控模組 ====================
+  st.subheader("🤖 AI 實時綜合多空推演報告（含風控機制）")
 
-    if s_close >= s_sma5: tech_score += 8
-    else: tech_score -= 8
+  # 1. 技術面指標計算
+  s_close = stock_df["Close"].iloc[-1]
+  s_sma5 = (
+      stock_df["SMA5"].dropna().iloc[-1]
+      if not stock_df["SMA5"].dropna().empty
+      else s_close
+  )
+  s_sma20 = (
+      stock_df["SMA20"].dropna().iloc[-1]
+      if not stock_df["SMA20"].dropna().empty
+      else s_close
+  )
+  s_sma60 = (
+      stock_df["SMA60"].dropna().iloc[-1]
+      if not stock_df["SMA60"].dropna().empty
+      else s_close
+  )
 
-    if s_close >= s_sma20: tech_score += 10
-    else: tech_score -= 10
+  tech_score = 25
+  if s_close >= s_sma5:
+    tech_score += 8
+  else:
+    tech_score -= 8
 
-    if s_close >= s_sma60: tech_score += 7
-    else: tech_score -= 7
+  if s_close >= s_sma20:
+    tech_score += 10
+  else:
+    tech_score -= 10
 
-    if len(stock_df) >= 5:
-        p_5d_ago = stock_df['Close'].iloc[-5]
-        ret_5d = ((s_close - p_5d_ago) / p_5d_ago) * 100
-        tech_score += min(max(ret_5d * 2, -10), 10)
+  if s_close >= s_sma60:
+    tech_score += 7
+  else:
+    tech_score -= 7
 
-    tech_score = min(max(tech_score, 0), 50)
+  if len(stock_df) >= 5:
+    p_5d_ago = stock_df["Close"].iloc[-5]
+    ret_5d = ((s_close - p_5d_ago) / p_5d_ago) * 100
+    tech_score += min(max(ret_5d * 2, -10), 10)
 
-    sox_pct = global_mkt.get("費城半導體", {}).get("pct", 0.0)
-    wtx_pct = global_mkt.get("台指期夜盤", {}).get("pct", 0.0)
-    
-    macro_score = 25
-    if bull_count + bear_count > 0:
-        macro_score += ((bull_count - bear_count) / (bull_count + bear_count)) * 15
-    macro_score += min(max((sox_pct + wtx_pct) * 5, -10), 10)
-    macro_score = min(max(macro_score, 0), 50)
+  # 當日漲跌幅懲罰/獎勵機制（大幅修復當日大跌還看多的問題）
+  tech_score += min(max(pct_change * 5, -15), 15)
+  tech_score = min(max(tech_score, 0), 50)
 
-    total_score = int(tech_score + macro_score)
+  # 2. 總體面與新聞評分
+  sox_pct = global_mkt.get("費城半導體", {}).get("pct", 0.0)
+  wtx_pct = global_mkt.get("台指期夜盤", {}).get("pct", 0.0)
 
-    if total_score >= 50:
-        score_text = f"{total_score}% 看多"
-        score_color = "#ff334b"
-        trend_status = "偏多格局"
-        logic_desc = "均線具備支撐或反彈動能，可隨大盤偏多佈局。"
-    else:
-        score_text = f"{100 - total_score}% 看空"
-        score_color = "#00e676"
-        trend_status = "空頭排列 / 偏空震盪"
-        logic_desc = "價格落於短期與中期均線之下，趨勢偏弱，注意下行風險。"
+  macro_score = 25
+  if bull_count + bear_count > 0:
+    macro_score += (
+        (bull_count - bear_count) / (bull_count + bear_count)
+    ) * 15
+  macro_score += min(max((sox_pct + wtx_pct) * 5, -10), 10)
+  macro_score = min(max(macro_score, 0), 50)
 
-    c_score, c_levels, c_logic = st.columns([1, 1, 1.5])
+  total_score = int(tech_score + macro_score)
 
-    with c_score:
-        st.markdown(f"""
+  # 3. 🛡️ 核心風控保護機制 (當日劇烈回檔強制降評)
+  is_sharp_drop = pct_change <= -1.5  # 當天跌超過 1.5% 觸發
+
+  if is_sharp_drop:
+    score_text = f"🚨 短線重挫 ({pct_change:.2f}%)"
+    score_color = "#00e676"
+    trend_status = "風控警報觸發"
+    logic_desc = f"⚠️ 今日急跌 {abs(pct_change):.2f}%，即便中長線指標未破，系統已啟動防禦機制，建議觀望或執行停損。"
+  elif total_score >= 50:
+    score_text = f"{total_score}% 看多"
+    score_color = "#ff334b"
+    trend_status = "偏多格局"
+    logic_desc = "均線具備支撐且當日動能正常，可隨大盤偏多佈局。"
+  else:
+    score_text = f"{100 - total_score}% 看空"
+    score_color = "#00e676"
+    trend_status = "空頭排列 / 偏空震盪"
+    logic_desc = (
+        "價格落於短期與中期均線之下，趨勢偏弱，注意下行風險。"
+    )
+
+  # 4. 動態 ATR 停損/目標價計算
+  latest_atr = (
+      stock_df["ATR14"].dropna().iloc[-1]
+      if not stock_df["ATR14"].dropna().empty
+      else curr_price * 0.02
+  )
+  dynamic_stop_loss = round(curr_price - (1.5 * latest_atr), 2)
+  dynamic_target = round(curr_price + (2.0 * latest_atr), 2)
+
+  # 5. UI 呈現
+  c_score, c_levels, c_logic = st.columns([1, 1, 1.5])
+
+  with c_score:
+    st.markdown(
+        f"""
         <div class="info-card">
             <h4 style="color:#4fc3f7; margin-top:0;">📊 綜合多空看盤指數</h4>
-            <h1 style="color:{score_color}; text-align:center; font-size:42px; margin:10px 0;">{score_text}</h1>
-            <p style="color:#8b949e; font-size:12px; text-align:center;">已結合【個股K線均線】+【美股夜盤】+【實時新聞】</p>
+            <h1 style="color:{score_color}; text-align:center; font-size:32px; margin:10px 0;">{score_text}</h1>
+            <p style="color:#8b949e; font-size:12px; text-align:center;">結合【個股均線】+【當日動能】+【美股夜盤】+【新聞】</p>
         </div>
-        """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
-    with c_levels:
-        st.markdown(f"""
+  with c_levels:
+    st.markdown(
+        f"""
         <div class="info-card">
-            <h4 style="color:#4fc3f7; margin-top:0;">🎯 明日點位實時推演</h4>
-            <p style="font-size:15px;"><b>明日預估壓力位：</b> <span style="color:#ff334b; font-weight:bold;">{(curr_price*1.025):.2f}</span> (+2.5%)</p>
-            <p style="font-size:15px;"><b>明日預估支撐位：</b> <span style="color:#00e676; font-weight:bold;">{(curr_price*0.975):.2f}</span> (-2.5%)</p>
-            <p style="color:#8b949e; font-size:12px;">依據該股近 20 日振幅與波動率計算</p>
+            <h4 style="color:#4fc3f7; margin-top:0;">🎯 動態風控與價位推演</h4>
+            <p style="font-size:15px;"><b>建議目標價 (2*ATR)：</b> <span style="color:#ff334b; font-weight:bold;">{dynamic_target}</span></p>
+            <p style="font-size:15px;"><b>防守停損價 (1.5*ATR)：</b> <span style="color:#00e676; font-weight:bold;">{dynamic_stop_loss}</span></p>
+            <p style="color:#8b949e; font-size:12px;">當前 14 日 ATR 波動值為：{latest_atr:.2f}</p>
         </div>
-        """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
-    with c_logic:
-        st.markdown(f"""
+  with c_logic:
+    st.markdown(
+        f"""
         <div class="info-card">
             <h4 style="color:#4fc3f7; margin-top:0;">💡 綜合推演邏輯說明</h4>
-            <p style="font-size:13px;"><b>1. 個股技術面：</b> 評分 `{tech_score:.0f}/50` ({trend_status})。</p>
-            <p style="font-size:13px;"><b>2. 大盤與新聞：</b> 評分 `{macro_score:.0f}/50` (費半 `{sox_pct:+.2f}%`)。</p>
+            <p style="font-size:13px;"><b>1. 當日動能：</b> 今日變動 `{pct_change:+.2f}%` {'(觸發風控)' if is_sharp_drop else ''}。</p>
+            <p style="font-size:13px;"><b>2. 技術與總體分：</b> 技術分 `{tech_score:.0f}/50` | 總體分 `{macro_score:.0f}/50`。</p>
             <p style="font-size:13px; color:#ffd60a;"><b>3. 操作建議：</b> {logic_desc}</p>
         </div>
-        """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 else:
-    st.error(f"暫時無法獲取股票數據（查詢輸入: {raw_input}），請確認名稱或代碼是否正確。")
+  st.error(
+      f"暫時無法獲取股票數據（查詢輸入: {raw_input}），請確認名稱或代碼是否正確。"
+  )
